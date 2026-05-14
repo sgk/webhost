@@ -1,0 +1,24 @@
+# Python virtual environment (repo root)
+/bin
+/include
+/lib
+/lib64
+/pyvenv.cfg
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local env files
+.env
+.env-deploy
+
+# Local gcloud config
+.gcloud/
+
+# Local Chrome profile for browser checks
+.chrome/
+
+# Editor swap files
+*.swp
+

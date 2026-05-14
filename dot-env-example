@@ -1,0 +1,27 @@
+# Optional settings used by activate.sh
+export GCP_CONFIG_NAME=webhost
+export GCP_PROJECT_ID=your-project-id
+export GCP_ACCOUNT=you@example.com
+
+# Base URL (used for OAuth redirect)
+export BASE_URL=https://example.com
+
+# Google OAuth (admin)
+export GOOGLE_OAUTH_CLIENT_ID=your-client-id
+export GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
+export ADMIN_SESSION_TTL_HOURS=12
+
+# Firestore prefix (optional)
+export FIRESTORE_PREFIX=dev
+
+# Website update settings
+export SITE_HISTORY_BUCKET=your-history-bucket
+export SITE_STAGING_DIR=/tmp/webhost-staging
+export SITE_SIGNED_URL_SERVICE_ACCOUNT=webhost-app@your-project-id.iam.gserviceaccount.com
+
+# Site defaults
+export DEFAULT_ARCHIVE_LIMIT=10
+export DEFAULT_UPLOAD_MAX_TOTAL_MB=200
+export DEFAULT_UPLOAD_MAX_FILES=2000
+export DEFAULT_UPLOAD_MAX_FILE_MB=50
+
