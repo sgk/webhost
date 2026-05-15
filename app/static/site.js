@@ -5,6 +5,7 @@
   const reloadButton = document.getElementById("reload-button");
   const deleteButton = document.getElementById("delete-button");
   const publishEmptyButton = document.getElementById("publish-empty-button");
+  const prodEmptyBadge = document.getElementById("prod-empty-badge");
   const uploadStatus = document.getElementById("upload-status");
   const archiveStatus = document.getElementById("archive-status");
   const archivesList = document.getElementById("archives-list");
@@ -58,6 +59,12 @@
   const updateDeleteButton = () => {
     if (deleteButton) {
       deleteButton.disabled = isBusy || selected.size === 0;
+    }
+  };
+
+  const updateProdEmptyBadge = (isProdEmpty) => {
+    if (prodEmptyBadge) {
+      prodEmptyBadge.hidden = !isProdEmpty;
     }
   };
 
@@ -374,7 +381,7 @@
             "公開する",
             "button primary small",
             () => publishArchive(archive.object_path),
-            isBusy || archive.object_path !== preparedObjectPath,
+            isBusy,
           ),
         );
       }
@@ -429,6 +436,11 @@
     renderArchives();
   };
 
+  const clearArchiveProcessingStatuses = () => {
+    archiveProcessingStatuses = new Map();
+    renderArchives();
+  };
+
   const removeProcessingArchive = (objectPath) => {
     processingArchives = processingArchives.filter((archive) => archive.object_path !== objectPath);
     renderArchives();
@@ -436,11 +448,13 @@
 
   const loadArchives = async () => {
     setBusy(true);
+    clearArchiveProcessingStatuses();
     setText(archiveStatus, "履歴を読み込んでいます...");
     try {
       const payload = await requestJson(api("/api/archives"));
       archives = payload.archives || [];
       preparedObjectPath = payload.prepared_object_path || "";
+      updateProdEmptyBadge(Boolean(payload.is_prod_empty));
       setText(archiveStatus, `履歴 ${archives.length}/${payload.archive_limit} 件`);
       renderArchives();
     } catch (error) {
@@ -525,6 +539,20 @@
     }
   };
 
+  const prepareArchiveForPublish = async (objectPath) => {
+    const response = await fetch(api("/api/prepare-staging"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ object_path: objectPath, target: "staging" }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "確認サイトの準備に失敗しました。");
+    }
+    await readProgressStream(response, objectPath, "公開前に確認サイトを用意しています。");
+    preparedObjectPath = objectPath;
+  };
+
   const publishArchive = async (objectPath) => {
     if (!window.confirm(`${site.siteName} にこの履歴を公開します。よろしいですか？`)) {
       return;
@@ -532,6 +560,11 @@
     setBusy(true);
     setArchiveProcessingStatus(objectPath, "公開を開始しています。", 0);
     try {
+      if (objectPath !== preparedObjectPath) {
+        setArchiveProcessingStatus(objectPath, "公開前に確認サイトを用意しています。", 0);
+        await prepareArchiveForPublish(objectPath);
+      }
+      setArchiveProcessingStatus(objectPath, "公開を開始しています。", 0);
       const response = await fetch(api("/api/publish"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -557,6 +590,7 @@
       return;
     }
     setBusy(true);
+    clearArchiveProcessingStatuses();
     setText(archiveStatus, "本番を空にしています...");
     try {
       await requestJson(api("/api/publish-empty"), {
@@ -565,6 +599,7 @@
         body: JSON.stringify({ target: "prod" }),
       });
       showToast("本番を空にしました。");
+      setText(archiveStatus, "");
       await loadArchives();
     } catch (error) {
       setText(archiveStatus, error.message, true);

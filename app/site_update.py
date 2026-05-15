@@ -198,10 +198,28 @@ def _zip_manifest(zf: zipfile.ZipFile, site: Site) -> dict[str, ZipEntry]:
     return manifest
 
 
+def _is_public_object_path_supported(name: str) -> bool:
+    return not name.startswith(".well-known/acme-challenge/")
+
+
+def _public_zip_manifest(zf: zipfile.ZipFile, site: Site) -> dict[str, ZipEntry]:
+    return {
+        name: entry
+        for name, entry in _zip_manifest(zf, site).items()
+        if _is_public_object_path_supported(name)
+    }
+
+
 def _read_zip_manifest(source_blob: storage.Blob, site: Site) -> dict[str, ZipEntry]:
     with source_blob.open("rb") as stream:
         with zipfile.ZipFile(stream) as zf:
             return _zip_manifest(zf, site)
+
+
+def _read_public_zip_manifest(source_blob: storage.Blob, site: Site) -> dict[str, ZipEntry]:
+    with source_blob.open("rb") as stream:
+        with zipfile.ZipFile(stream) as zf:
+            return _public_zip_manifest(zf, site)
 
 
 def _validate_zip_blob(source_blob: storage.Blob, site: Site) -> ZipSummary:
@@ -417,7 +435,7 @@ def _load_current_published_manifest(history_bucket: storage.Bucket, public_buck
     current_blob = history_bucket.blob(published_object_path)
     if not current_blob.exists():
         raise HTTPException(status_code=409, detail="現公開ZIPが見つかりません。本番を空にしてから公開してください。")
-    return _read_zip_manifest(current_blob, site)
+    return _read_public_zip_manifest(current_blob, site)
 
 
 def _delete_bucket_object_names(bucket: storage.Bucket, object_names: set[str], progress: ProgressCallback | None = None) -> int:
@@ -439,12 +457,14 @@ def _deploy_zip_to_bucket(
 ) -> dict:
     with source_blob.open("rb") as stream:
         with zipfile.ZipFile(stream) as zf:
-            new_entries = _zip_manifest(zf, site)
+            new_entries = _public_zip_manifest(zf, site)
             if progress:
                 progress({"stage": "validated", "file_count": len(new_entries)})
             _verify_bucket_matches_manifest(target_bucket, current_entries, progress=progress)
             changed_infos = []
             for info in _zip_file_infos(zf):
+                if not _is_public_object_path_supported(info.filename):
+                    continue
                 current_entry = current_entries.get(info.filename)
                 if current_entry and _same_zip_content(current_entry, new_entries[info.filename]):
                     continue
@@ -707,7 +727,6 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
     if payload.target != "prod":
         raise HTTPException(status_code=400, detail="target は prod のみ指定できます。")
     _validate_history_object_path(site.site_id, payload.object_path)
-    _require_prepared_archive(site.site_id, payload.object_path)
 
     client = storage.Client()
     history_bucket = _history_bucket(client)
