@@ -11,6 +11,7 @@ import queue
 from pathlib import Path
 import shutil
 import threading
+import time
 from typing import Callable, Iterable
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -81,6 +82,46 @@ class ZipSummary:
 
 
 ProgressCallback = Callable[[dict], None]
+
+operation_lock = threading.Lock()
+operations: dict[str, dict] = {}
+
+
+class OperationReporter:
+    def __init__(self, site_id: str, kind: str, object_path: str = ""):
+        self.site_id = site_id
+        self.kind = kind
+        self.object_path = object_path
+        self.operation_id = f"{kind}-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+        self.last_write_at = 0.0
+
+    def write(self, status: str, message: str, progress: int | None = None, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self.last_write_at < 1.0:
+            return
+        self.last_write_at = now
+        data = {
+            "operation_id": self.operation_id,
+            "kind": self.kind,
+            "object_path": self.object_path,
+            "status": status,
+            "message": message,
+            "progress": progress,
+            "updated_at": datetime.utcnow(),
+        }
+        with operation_lock:
+            operations[self.site_id] = data
+
+
+def _current_operation(site_id: str) -> dict | None:
+    with operation_lock:
+        operation = operations.get(site_id)
+        if not operation:
+            return None
+        if operation["status"] != "running" and (datetime.utcnow() - operation["updated_at"]).total_seconds() > 60:
+            operations.pop(site_id, None)
+            return None
+        return dict(operation)
 
 
 def _json_error(message: str, status_code: int = 400) -> JSONResponse:
@@ -676,53 +717,44 @@ async def prepare_staging(request: Request, site_id: str, payload: DeployRequest
             return json.dumps(event, ensure_ascii=False) + "\n"
 
         progress_queue: queue.Queue[dict | None] = queue.Queue()
+        operation = OperationReporter(site.site_id, "prepare-staging", payload.object_path)
 
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "validated":
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "validated",
-                        "message": f"ZIPを確認しました。{event['file_count']}件を展開します。",
-                        "progress": 20,
-                    }
-                )
+                message = f"ZIPを確認しました。{event['file_count']}件を展開します。"
+                progress_queue.put({"status": "progress", "stage": "validated", "message": message, "progress": 20})
+                operation.write("running", message, 20)
             elif event["stage"] == "clear":
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "clear",
-                        "message": f"確認サイトを空にしています。{event['deleted_count']}件",
-                        "progress": 10,
-                    }
-                )
+                message = f"確認サイトを空にしています。{event['deleted_count']}件"
+                progress_queue.put({"status": "progress", "stage": "clear", "message": message, "progress": 10})
+                operation.write("running", message, 10)
             elif event["stage"] == "extract":
                 file_count = event["file_count"] or 1
                 uploaded_count = event["uploaded_count"]
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "extract",
-                        "message": f"確認サイトへ展開しています。{uploaded_count}/{file_count}件",
-                        "progress": min(20 + round((uploaded_count / file_count) * 75), 95),
-                    }
-                )
+                message = f"確認サイトへ展開しています。{uploaded_count}/{file_count}件"
+                progress_value = min(20 + round((uploaded_count / file_count) * 75), 95)
+                progress_queue.put({"status": "progress", "stage": "extract", "message": message, "progress": progress_value})
+                operation.write("running", message, progress_value)
 
         def run_prepare() -> None:
             try:
                 result = _deploy_zip_to_directory(source_blob, site, progress=enqueue_progress)
+                operation.write("running", "確認サイトを記録しています。", 98, force=True)
                 progress_queue.put({"status": "progress", "stage": "marker", "message": "確認サイトを記録しています。", "progress": 98})
                 _mark_prepared_archive(site.site_id, payload.object_path)
+                operation.write("done", "確認サイトを用意しました。", 100, force=True)
                 progress_queue.put({"status": "ok", "target": "staging", "object_path": payload.object_path, "progress": 100, **result})
             except Exception as exc:
                 logger.exception("確認サイトの準備に失敗しました。")
                 message = exc.detail if isinstance(exc, HTTPException) else "確認サイトの準備に失敗しました。"
+                operation.write("error", message, None, force=True)
                 progress_queue.put({"status": "error", "message": message})
             finally:
                 progress_queue.put(None)
 
         thread = threading.Thread(target=run_prepare, daemon=True)
         thread.start()
+        operation.write("running", "確認サイトの準備を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "確認サイトの準備を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -754,62 +786,41 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
             return json.dumps(event, ensure_ascii=False) + "\n"
 
         progress_queue: queue.Queue[dict | None] = queue.Queue()
+        operation = OperationReporter(site.site_id, "publish", payload.object_path)
 
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "validated":
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "validated",
-                        "message": f"ZIPを確認しました。{event['file_count']}件を公開します。",
-                        "progress": 10,
-                    }
-                )
+                message = f"ZIPを確認しました。{event['file_count']}件を公開します。"
+                progress_queue.put({"status": "progress", "stage": "validated", "message": message, "progress": 10})
+                operation.write("running", message, 10)
             elif event["stage"] == "verify":
                 file_count = event["file_count"] or 1
                 checked_count = event["checked_count"]
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "verify",
-                        "message": f"現公開内容を確認しています。{checked_count}/{file_count}件",
-                        "progress": min(10 + round((checked_count / file_count) * 10), 20),
-                    }
-                )
+                message = f"現公開内容を確認しています。{checked_count}/{file_count}件"
+                progress_value = min(10 + round((checked_count / file_count) * 10), 20)
+                progress_queue.put({"status": "progress", "stage": "verify", "message": message, "progress": progress_value})
+                operation.write("running", message, progress_value)
             elif event["stage"] == "diff":
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "diff",
-                        "message": f"差分を確認しました。送信{event['changed_count']}件 / 削除{event['deleted_count']}件 / 変更なし{event['skipped_count']}件",
-                        "progress": 20,
-                    }
-                )
+                message = f"差分を確認しました。送信{event['changed_count']}件 / 削除{event['deleted_count']}件 / 変更なし{event['skipped_count']}件"
+                progress_queue.put({"status": "progress", "stage": "diff", "message": message, "progress": 20})
+                operation.write("running", message, 20, force=True)
             elif event["stage"] == "upload":
                 file_count = event["file_count"] or 1
                 copied_count = event["copied_count"]
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "upload",
-                        "message": f"公開先へアップロードしています。{copied_count}/{file_count}件",
-                        "progress": min(20 + round((copied_count / file_count) * 70), 90),
-                    }
-                )
+                message = f"公開先へアップロードしています。{copied_count}/{file_count}件"
+                progress_value = min(20 + round((copied_count / file_count) * 70), 90)
+                progress_queue.put({"status": "progress", "stage": "upload", "message": message, "progress": progress_value})
+                operation.write("running", message, progress_value)
             elif event["stage"] == "delete":
-                progress_queue.put(
-                    {
-                        "status": "progress",
-                        "stage": "delete",
-                        "message": f"不要な公開ファイルを削除しています。{event['deleted_count']}件",
-                        "progress": 95,
-                    }
-                )
+                message = f"不要な公開ファイルを削除しています。{event['deleted_count']}件"
+                progress_queue.put({"status": "progress", "stage": "delete", "message": message, "progress": 95})
+                operation.write("running", message, 95)
 
         def run_publish() -> None:
             try:
                 current_entries = _load_current_published_manifest(history_bucket, public_bucket, site)
                 result = _deploy_zip_to_bucket(source_blob, public_bucket, current_entries, site, progress=enqueue_progress)
+                operation.write("running", "公開履歴を記録しています。", 98, force=True)
                 progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
                 _save_published_marker(history_bucket, site.site_id, payload.object_path)
                 source_blob.reload()
@@ -818,16 +829,19 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
                 source_blob.metadata = metadata
                 source_blob.patch()
                 _save_site_publish_state(site, payload.object_path, source_blob.time_created)
+                operation.write("done", "公開しました。", 100, force=True)
                 progress_queue.put({"status": "ok", "target": "prod", "object_path": payload.object_path, "progress": 100, **result})
             except Exception as exc:
                 logger.exception("公開処理に失敗しました。")
                 message = exc.detail if isinstance(exc, HTTPException) else "公開に失敗しました。"
+                operation.write("error", message, None, force=True)
                 progress_queue.put({"status": "error", "message": message})
             finally:
                 progress_queue.put(None)
 
         thread = threading.Thread(target=run_publish, daemon=True)
         thread.start()
+        operation.write("running", "公開を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "公開を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -854,43 +868,52 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
             return json.dumps(event, ensure_ascii=False) + "\n"
 
         progress_queue: queue.Queue[dict | None] = queue.Queue()
+        operation = OperationReporter(site.site_id, "publish-empty")
 
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "delete":
+                message = f"公開ファイルを削除しています。{event['deleted_count']}件"
                 progress_queue.put(
                     {
                         "status": "progress",
                         "stage": "delete",
-                        "message": f"公開ファイルを削除しています。{event['deleted_count']}件",
+                        "message": message,
                         "progress": None,
                     }
                 )
+                operation.write("running", message, None)
             elif event["stage"] == "index":
+                message = "空のindex.htmlを設置しています。"
                 progress_queue.put(
                     {
                         "status": "progress",
                         "stage": "index",
-                        "message": "空のindex.htmlを設置しています。",
+                        "message": message,
                         "progress": 90,
                     }
                 )
+                operation.write("running", message, 90, force=True)
 
         def run_publish_empty() -> None:
             try:
                 result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress)
+                operation.write("running", "公開履歴を記録しています。", 98, force=True)
                 progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
                 _save_published_marker(history_bucket, site.site_id, EMPTY_PUBLISHED_OBJECT_PATH)
                 _save_site_publish_state(site, EMPTY_PUBLISHED_OBJECT_PATH, None)
+                operation.write("done", "本番を空にしました。", 100, force=True)
                 progress_queue.put({"status": "ok", "target": "prod", "object_path": "", "progress": 100, **result})
             except Exception as exc:
                 logger.exception("本番を空にする処理に失敗しました。")
                 message = exc.detail if isinstance(exc, HTTPException) else "本番を空にできませんでした。"
+                operation.write("error", message, None, force=True)
                 progress_queue.put({"status": "error", "message": message})
             finally:
                 progress_queue.put(None)
 
         thread = threading.Thread(target=run_publish_empty, daemon=True)
         thread.start()
+        operation.write("running", "本番を空にする処理を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "本番を空にする処理を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -936,6 +959,7 @@ async def list_archives(request: Request, site_id: str):
             "prepared_object_path": prepared_object_path,
             "public_url": site.public_url,
             "staging_url": f"/sites/{site.site_id}/staging/",
+            "operation": _current_operation(site.site_id),
         }
     )
 

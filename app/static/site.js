@@ -16,6 +16,7 @@
   let isBusy = false;
   let processingArchives = [];
   let archiveProcessingStatuses = new Map();
+  let archivePollTimer = null;
 
   const api = (path) => `/sites/${encodeURIComponent(site.siteId)}${path}`;
 
@@ -66,6 +67,31 @@
     if (prodEmptyBadge) {
       prodEmptyBadge.hidden = !isProdEmpty;
     }
+  };
+
+  const updatePolling = (operation) => {
+    if (archivePollTimer && (!operation || operation.status !== "running")) {
+      window.clearInterval(archivePollTimer);
+      archivePollTimer = null;
+    }
+    if (operation && operation.status === "running" && !archivePollTimer) {
+      archivePollTimer = window.setInterval(() => {
+        loadArchives({ clearStatuses: false, quiet: true });
+      }, 1500);
+    }
+  };
+
+  const applyOperation = (operation) => {
+    updatePolling(operation);
+    if (!operation) {
+      return;
+    }
+    const isError = operation.status === "error";
+    if (operation.object_path) {
+      setArchiveProcessingStatus(operation.object_path, operation.message || "処理しています。", operation.progress, isError);
+      return;
+    }
+    setText(archiveStatus, operation.message || "処理しています。", isError);
   };
 
   const requestJson = async (url, options = {}) => {
@@ -484,10 +510,16 @@
     renderArchives();
   };
 
-  const loadArchives = async () => {
+  const loadArchives = async (options = {}) => {
+    const clearStatuses = options.clearStatuses !== false;
+    const quiet = Boolean(options.quiet);
     setBusy(true);
-    clearArchiveProcessingStatuses();
-    setText(archiveStatus, "履歴を読み込んでいます...");
+    if (clearStatuses) {
+      clearArchiveProcessingStatuses();
+    }
+    if (!quiet) {
+      setText(archiveStatus, "履歴を読み込んでいます...");
+    }
     try {
       const payload = await requestJson(api("/api/archives"));
       archives = payload.archives || [];
@@ -495,6 +527,7 @@
       updateProdEmptyBadge(Boolean(payload.is_prod_empty));
       setText(archiveStatus, `履歴 ${archives.length}/${payload.archive_limit} 件`);
       renderArchives();
+      applyOperation(payload.operation);
     } catch (error) {
       setText(archiveStatus, error.message, true);
     } finally {
