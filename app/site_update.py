@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from app.auth import require_admin
 from app.config import load_settings
 from app.firestore import Site, get_client, get_collection, get_site, is_site_admin, list_admin_sites
+from app.i18n import language_url, make_translator, request_language
 
 settings = load_settings()
 router = APIRouter()
@@ -36,6 +37,17 @@ logger = logging.getLogger("uvicorn.error")
 
 EMPTY_PUBLISHED_OBJECT_PATH = "__empty__"
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Tokyo")
+
+
+def _template_context(request: Request, **values: object) -> dict:
+    lang = request_language(request)
+    return {
+        "request": request,
+        "lang": lang,
+        "t": make_translator(lang),
+        "language_url": lambda next_lang: language_url(request, next_lang),
+        **values,
+    }
 
 
 class SignUploadRequest(BaseModel):
@@ -602,15 +614,15 @@ async def sites_index(request: Request):
     }
     return templates.TemplateResponse(
         "sites.html",
-        {
-            "request": request,
-            "title": "サイト一覧",
-            "sites": sites,
-            "public_links": public_links,
-            "published_zip_dates": published_zip_dates,
-            "admin_email": auth.get("email"),
-            "admin_picture": auth.get("picture"),
-        },
+        _template_context(
+            request,
+            title=make_translator(request_language(request))("sites.title"),
+            sites=sites,
+            public_links=public_links,
+            published_zip_dates=published_zip_dates,
+            admin_email=auth.get("email"),
+            admin_picture=auth.get("picture"),
+        ),
     )
 
 
@@ -622,13 +634,13 @@ async def site_detail(request: Request, site_id: str):
     auth = require_admin(request)
     return templates.TemplateResponse(
         "site.html",
-        {
-            "request": request,
-            "title": site.name,
-            "site": site,
-            "admin_email": auth.get("email") if isinstance(auth, dict) else None,
-            "admin_picture": auth.get("picture") if isinstance(auth, dict) else None,
-        },
+        _template_context(
+            request,
+            title=site.name,
+            site=site,
+            admin_email=auth.get("email") if isinstance(auth, dict) else None,
+            admin_picture=auth.get("picture") if isinstance(auth, dict) else None,
+        ),
     )
 
 

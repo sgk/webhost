@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
   <section class="panel narrow">
-    <h1>管理ログイン</h1>
+    <h1>{{ t("login.title") }}</h1>
     {% if error %}
       <p class="message error">{{ error }}</p>
     {% endif %}
-    <a class="button primary" href="{{ auth_start_url }}">Googleアカウントでログイン</a>
+    <a class="button primary" href="{{ auth_start_url }}">{{ t("login.google") }}</a>
   </section>
 {% endblock %}
-

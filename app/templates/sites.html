@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
   <section class="heading">
-    <h1>サイト一覧</h1>
+    <h1>{{ t("sites.title") }}</h1>
   </section>
 
   {% if sites %}
-    <section class="site-list" aria-label="管理サイト">
+    <section class="site-list" aria-label="{{ t('sites.aria') }}">
       <div class="site-list-row site-list-head">
-        <span>サイト</span>
-        <span>公開状態</span>
-        <span>元ZIP</span>
-        <span>操作</span>
+        <span>{{ t("sites.site") }}</span>
+        <span>{{ t("sites.status") }}</span>
+        <span>{{ t("sites.source_zip") }}</span>
+        <span>{{ t("sites.actions") }}</span>
       </div>
       {% for site in sites %}
         <div class="site-list-row">
@@ -21,7 +21,7 @@
             {% if public_links.get(site.site_id) %}
               <a href="{{ site.public_url }}" target="_blank" rel="noopener">{{ site.public_url }}</a>
             {% else %}
-              <span class="muted">未公開</span>
+              <span class="muted">{{ t("sites.unpublished") }}</span>
             {% endif %}
           </div>
           <div class="site-list-date">
@@ -32,14 +32,14 @@
             {% endif %}
           </div>
           <div class="site-list-actions">
-            <a class="button secondary small" href="/sites/{{ site.site_id }}">管理</a>
+            <a class="button secondary small" href="/sites/{{ site.site_id }}">{{ t("sites.manage") }}</a>
           </div>
         </div>
       {% endfor %}
     </section>
   {% else %}
     <section class="panel">
-      <p class="muted">管理できるサイトはありません。</p>
+      <p class="muted">{{ t("sites.empty") }}</p>
     </section>
   {% endif %}
 {% endblock %}

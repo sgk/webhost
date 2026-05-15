@@ -12,6 +12,7 @@ import requests
 
 from app.config import load_settings
 from app.firestore import get_client, get_collection
+from app.i18n import language_url, make_translator, request_language
 
 settings = load_settings()
 router = APIRouter()
@@ -67,11 +68,16 @@ def login_url(next_path: str | None = None) -> str:
 
 def _render_login(request: Request, error: str | None = None, next_path: str | None = None) -> HTMLResponse:
     normalized = _normalize_next_path(next_path)
+    lang = request_language(request)
+    t = make_translator(lang)
     return templates.TemplateResponse(
         "login.html",
         {
             "request": request,
-            "title": "管理ログイン",
+            "title": t("login.title"),
+            "lang": lang,
+            "t": t,
+            "language_url": lambda next_lang: language_url(request, next_lang),
             "error": error,
             "auth_start_url": f"/auth/google?next={quote(normalized)}",
         },

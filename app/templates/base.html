@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="{{ lang or 'ja' }}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,13 +12,19 @@
       <nav class="topnav">
         {% if admin_email %}
           <span class="admin-email">{{ admin_email }}</span>
-          <a class="button secondary small" href="/logout">ログアウト</a>
+          <a class="button secondary small" href="/logout">{{ t("logout") }}</a>
         {% endif %}
+        <a class="button secondary small" href="{{ language_url('ja') }}" data-lang-link="ja">{{ t("language.ja") }}</a>
+        <a class="button secondary small" href="{{ language_url('en') }}" data-lang-link="en">{{ t("language.en") }}</a>
       </nav>
     </header>
     <main class="page">
       {% block content %}{% endblock %}
     </main>
     <div id="toast" class="toast" hidden></div>
+    <script>
+      window.WEBHOST_LANG = {{ (lang or "ja") | tojson }};
+      document.cookie = `webhost_lang=${window.WEBHOST_LANG}; path=/; max-age=31536000; SameSite=Lax`;
+    </script>
   </body>
 </html>
