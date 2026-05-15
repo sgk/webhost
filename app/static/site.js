@@ -127,6 +127,76 @@
     return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), template);
   };
 
+  const serverMessage = (message) => {
+    if (lang !== "en" || !message) {
+      return message;
+    }
+    const exact = {
+      "SITE_HISTORY_BUCKET が未設定です。": "SITE_HISTORY_BUCKET is not configured.",
+      "SITE_SIGNED_URL_SERVICE_ACCOUNT または GCP_PROJECT_ID が未設定です。": "SITE_SIGNED_URL_SERVICE_ACCOUNT or GCP_PROJECT_ID is not configured.",
+      "ZIP直下に index.html が必要です。": "index.html is required at the ZIP root.",
+      "ファイル数が上限を超えています。": "The file count exceeds the limit.",
+      "ファイルサイズが上限を超えています。": "A file exceeds the size limit.",
+      "総サイズが上限を超えています。": "The total size exceeds the limit.",
+      "履歴ZIPのパスが不正です。": "The archive ZIP path is invalid.",
+      "stagingに展開できないパスが含まれています。": "The ZIP contains a path that cannot be extracted to staging.",
+      "確認サイトが未準備です。先に確認サイトを用意してください。": "The staging site is not ready. Prepare it first.",
+      "別のZIPが確認サイトとして準備されています。公開前に確認サイトを用意してください。": "Another ZIP is prepared for staging. Prepare this archive before publishing.",
+      "現公開ZIPと現公開内容のファイル一覧が一致しません。": "The current published ZIP and production file list do not match.",
+      "現公開ZIPが記録されていません。本番を空にしてから公開してください。": "The current published ZIP is not recorded. Empty production before publishing.",
+      "現公開ZIPが見つかりません。本番を空にしてから公開してください。": "The current published ZIP was not found. Empty production before publishing.",
+      "サイトが見つかりません。": "Site not found.",
+      "公開用GCSバケットが未設定です。": "The public GCS bucket is not configured.",
+      "content_type が不正です。": "content_type is invalid.",
+      "size_bytes が不正です。": "size_bytes is invalid.",
+      "ZIPのサイズが上限を超えています。": "The ZIP size exceeds the limit.",
+      "履歴数が上限に達しています。不要な履歴を削除してください。": "The archive limit has been reached. Delete unnecessary archives.",
+      "target は staging のみ指定できます。": "target must be staging.",
+      "target は prod のみ指定できます。": "target must be prod.",
+      "ZIPが見つかりません。": "ZIP not found.",
+      "履歴ZIPが見つかりません。": "Archive ZIP not found.",
+      "確認サイトの準備に失敗しました。": "Failed to prepare staging site.",
+      "公開に失敗しました。": "Publish failed.",
+      "本番を空にできませんでした。": "Could not empty production.",
+      "削除する履歴を選択してください。": "Select archives to delete.",
+      "公開中の履歴は削除できません。": "Published archives cannot be deleted.",
+      "メモは500文字以内で入力してください。": "Notes must be 500 characters or fewer.",
+      "確認サイトが未準備です。管理画面で確認サイトを用意してください。": "The staging site is not ready. Prepare it in the admin screen.",
+      "確認サイトを記録しています。": "Recording staging state.",
+      "確認サイトを用意しました。": "Staging site is ready.",
+      "確認サイトの準備を開始しています。": "Starting staging preparation.",
+      "公開履歴を記録しています。": "Recording publish history.",
+      "公開しました。": "Published.",
+      "公開を開始しています。": "Starting publish.",
+      "本番を空にしました。": "Production emptied.",
+      "本番を空にする処理を開始しています。": "Starting production emptying.",
+      "空のindex.htmlを設置しています。": "Installing empty index.html.",
+    };
+    if (exact[message]) {
+      return exact[message];
+    }
+    const patterns = [
+      [/^ZIPを確認しました。(\d+)件を展開します。$/, "Validated ZIP. Extracting $1 files."],
+      [/^確認サイトを空にしています。(\d+)件$/, "Clearing staging site. $1 files"],
+      [/^確認サイトへ展開しています。(\d+)\/(\d+)件$/, "Extracting to staging. $1/$2 files"],
+      [/^ZIPを確認しました。(\d+)件を公開します。$/, "Validated ZIP. Publishing $1 files."],
+      [/^現公開内容を確認しています。(\d+)\/(\d+)件$/, "Checking current production. $1/$2 files"],
+      [/^差分を確認しました。送信(\d+)件 \/ 削除(\d+)件 \/ 変更なし(\d+)件$/, "Diff checked. Upload $1 / delete $2 / unchanged $3"],
+      [/^公開先へアップロードしています。(\d+)\/(\d+)件$/, "Uploading to production. $1/$2 files"],
+      [/^不要な公開ファイルを削除しています。(\d+)件$/, "Deleting obsolete production files. $1 files"],
+      [/^公開ファイルを削除しています。(\d+)件$/, "Deleting production files. $1 files"],
+      [/^現公開内容のサイズが一致しません: (.+)$/, "Current production size does not match: $1"],
+      [/^現公開内容のCRC32が一致しません: (.+)$/, "Current production CRC32 does not match: $1"],
+      [/^現公開内容のメタデータサイズが一致しません: (.+)$/, "Current production metadata size does not match: $1"],
+    ];
+    for (const [pattern, replacement] of patterns) {
+      if (pattern.test(message)) {
+        return message.replace(pattern, replacement);
+      }
+    }
+    return message;
+  };
+
   const setText = (element, text, isError = false) => {
     if (!element) {
       return;
@@ -195,17 +265,17 @@
     }
     const isError = operation.status === "error";
     if (operation.object_path) {
-      setArchiveProcessingStatus(operation.object_path, operation.message || t("busy"), operation.progress, isError);
+      setArchiveProcessingStatus(operation.object_path, serverMessage(operation.message) || t("busy"), operation.progress, isError);
       return;
     }
-    setText(archiveStatus, operation.message || t("busy"), isError);
+    setText(archiveStatus, serverMessage(operation.message) || t("busy"), isError);
   };
 
   const requestJson = async (url, options = {}) => {
     const response = await fetch(url, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || t("failed"));
+      throw new Error(serverMessage(payload.detail) || t("failed"));
     }
     return payload;
   };
@@ -229,14 +299,14 @@
         }
         const event = JSON.parse(line);
         if (event.status === "error") {
-          throw new Error(event.message || t("failed"));
+          throw new Error(serverMessage(event.message) || t("failed"));
         }
         if (event.status === "ok") {
           completedPayload = event;
           setArchiveProcessingStatus(objectPath, t("done"), 100);
           continue;
         }
-        setArchiveProcessingStatus(objectPath, event.message || fallbackMessage, event.progress);
+        setArchiveProcessingStatus(objectPath, serverMessage(event.message) || fallbackMessage, event.progress);
       }
       if (done) {
         break;
@@ -267,14 +337,14 @@
         }
         const event = JSON.parse(line);
         if (event.status === "error") {
-          throw new Error(event.message || t("failed"));
+          throw new Error(serverMessage(event.message) || t("failed"));
         }
         if (event.status === "ok") {
           completedPayload = event;
           setText(archiveStatus, t("done"));
           continue;
         }
-        setText(archiveStatus, event.message || fallbackMessage);
+        setText(archiveStatus, serverMessage(event.message) || fallbackMessage);
       }
       if (done) {
         break;
@@ -704,7 +774,7 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || t("prepareFailed"));
+        throw new Error(serverMessage(payload.detail) || t("prepareFailed"));
       }
       await readProgressStream(response, objectPath, t("preparingStaging"));
       clearArchiveProcessingStatus(objectPath);
@@ -725,7 +795,7 @@
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || t("prepareFailed"));
+      throw new Error(serverMessage(payload.detail) || t("prepareFailed"));
     }
     await readProgressStream(response, objectPath, t("preparingBeforePublish"));
     preparedObjectPath = objectPath;
@@ -750,7 +820,7 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || t("publishFailed"));
+        throw new Error(serverMessage(payload.detail) || t("publishFailed"));
       }
       const payload = await readProgressStream(response, objectPath, t("publishing"));
       clearArchiveProcessingStatus(objectPath);
@@ -778,7 +848,7 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || t("emptyFailed"));
+        throw new Error(serverMessage(payload.detail) || t("emptyFailed"));
       }
       await readStatusProgressStream(response, t("emptyingProduction"));
       showToast(t("emptiedProduction"));
