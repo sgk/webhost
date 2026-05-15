@@ -14,6 +14,7 @@
   let preparedObjectPath = "";
   let isBusy = false;
   let processingArchives = [];
+  let archiveProcessingStatuses = new Map();
 
   const api = (path) => `/sites/${encodeURIComponent(site.siteId)}${path}`;
 
@@ -38,6 +39,7 @@
   };
 
   const setBusy = (busy) => {
+    const changed = isBusy !== busy;
     isBusy = busy;
     [reloadButton, publishEmptyButton].forEach((button) => {
       if (button) {
@@ -48,6 +50,9 @@
       dropZone.setAttribute("aria-disabled", busy ? "true" : "false");
     }
     updateDeleteButton();
+    if (changed) {
+      renderArchives();
+    }
   };
 
   const updateDeleteButton = () => {
@@ -63,6 +68,44 @@
       throw new Error(payload.detail || "処理に失敗しました。");
     }
     return payload;
+  };
+
+  const readProgressStream = async (response, objectPath, fallbackMessage) => {
+    if (!response.body) {
+      throw new Error("処理の進捗を読み込めませんでした。");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completedPayload = null;
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+        const event = JSON.parse(line);
+        if (event.status === "error") {
+          throw new Error(event.message || "処理に失敗しました。");
+        }
+        if (event.status === "ok") {
+          completedPayload = event;
+          setArchiveProcessingStatus(objectPath, "完了しました。", 100);
+          continue;
+        }
+        setArchiveProcessingStatus(objectPath, event.message || fallbackMessage, event.progress);
+      }
+      if (done) {
+        break;
+      }
+    }
+    if (!completedPayload) {
+      throw new Error("処理の完了を確認できませんでした。");
+    }
+    return completedPayload;
   };
 
   const archiveApiPath = (objectPath) => {
@@ -239,18 +282,26 @@
     }
 
     displayArchives.forEach((archive) => {
+      const rowStatus = archive.is_processing
+        ? { message: archive.processing_status || "処理しています...", progress: archive.processing_progress, isError: archive.is_error }
+        : archiveProcessingStatuses.get(archive.object_path);
+      const isRowProcessing = Boolean(rowStatus);
       const row = document.createElement("div");
       row.className = "archive-row";
-      if (archive.is_processing) {
-        row.classList.add(archive.is_error ? "is-error" : "is-processing");
+      if (isRowProcessing) {
+        row.classList.add(rowStatus.isError ? "is-error" : "is-processing");
       }
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = archive.object_path;
       checkbox.checked = selected.has(archive.object_path);
-      checkbox.disabled = archive.is_processing || archive.is_published || isBusy;
-      checkbox.title = archive.is_published ? "公開中の履歴は削除できません" : "削除対象にする";
+      checkbox.disabled = isRowProcessing || archive.is_published || isBusy;
+      checkbox.title = isRowProcessing
+        ? "処理中の履歴は選択できません"
+        : archive.is_published
+          ? "公開中の履歴は削除できません"
+          : "削除対象にする";
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
           selected.add(archive.object_path);
@@ -285,19 +336,19 @@
 
       const detail = document.createElement("div");
       detail.className = "archive-detail";
-      detail.textContent = archive.is_processing
-        ? archive.processing_status
+      detail.textContent = isRowProcessing
+        ? rowStatus.message
         : `${formatDate(archive.created_at)} / ${formatSize(archive.size_bytes)}`;
 
       meta.append(name, detail);
-      if (archive.is_processing) {
+      if (isRowProcessing) {
         const progress = document.createElement("div");
         progress.className = "archive-progress";
         const bar = document.createElement("div");
         bar.className = "archive-progress-bar";
         const fill = document.createElement("span");
-        if (Number.isFinite(archive.processing_progress)) {
-          fill.style.width = `${archive.processing_progress}%`;
+        if (Number.isFinite(rowStatus.progress)) {
+          fill.style.width = `${rowStatus.progress}%`;
         } else {
           bar.classList.add("is-indeterminate");
         }
@@ -310,20 +361,20 @@
 
       const actions = document.createElement("div");
       actions.className = "archive-actions";
-      if (archive.is_processing) {
+      if (isRowProcessing) {
         const status = document.createElement("span");
         status.className = "archive-action-status";
-        status.textContent = archive.is_error ? "失敗" : "処理中";
+        status.textContent = rowStatus.isError ? "失敗" : "処理中";
         actions.append(status);
       } else {
         actions.append(
-          createIconButton("確認サイトを用意する", inspectIcon(), () => prepareArchive(archive.object_path), false),
+          createIconButton("確認サイトを用意する", inspectIcon(), () => prepareArchive(archive.object_path), isBusy),
           createDownloadLink(api(`/api/archives/${archiveApiPath(archive.object_path)}/download`)),
           createButton(
             "公開する",
             "button primary small",
             () => publishArchive(archive.object_path),
-            archive.object_path !== preparedObjectPath,
+            isBusy || archive.object_path !== preparedObjectPath,
           ),
         );
       }
@@ -361,6 +412,20 @@
         processing_progress: progress,
       };
     });
+    renderArchives();
+  };
+
+  const setArchiveProcessingStatus = (objectPath, message, progress = null, isError = false) => {
+    archiveProcessingStatuses.set(objectPath, {
+      message,
+      progress,
+      isError,
+    });
+    renderArchives();
+  };
+
+  const clearArchiveProcessingStatus = (objectPath) => {
+    archiveProcessingStatuses.delete(objectPath);
     renderArchives();
   };
 
@@ -438,17 +503,23 @@
 
   const prepareArchive = async (objectPath) => {
     setBusy(true);
-    setText(archiveStatus, "確認サイトを用意しています...");
+    setArchiveProcessingStatus(objectPath, "確認サイトの準備を開始しています。", 0);
     try {
-      await requestJson(api("/api/prepare-staging"), {
+      const response = await fetch(api("/api/prepare-staging"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ object_path: objectPath, target: "staging" }),
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "確認サイトの準備に失敗しました。");
+      }
+      await readProgressStream(response, objectPath, "確認サイトを用意しています。");
+      clearArchiveProcessingStatus(objectPath);
       showToast("確認サイトを用意しました。");
       await loadArchives();
     } catch (error) {
-      setText(archiveStatus, error.message, true);
+      setArchiveProcessingStatus(objectPath, error.message, null, true);
     } finally {
       setBusy(false);
     }
@@ -459,17 +530,23 @@
       return;
     }
     setBusy(true);
-    setText(archiveStatus, "公開しています...");
+    setArchiveProcessingStatus(objectPath, "公開を開始しています。", 0);
     try {
-      const payload = await requestJson(api("/api/publish"), {
+      const response = await fetch(api("/api/publish"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ object_path: objectPath, target: "prod" }),
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "公開に失敗しました。");
+      }
+      const payload = await readProgressStream(response, objectPath, "公開しています。");
+      clearArchiveProcessingStatus(objectPath);
       showToast(`公開しました。送信${payload.copied_count}件 / 削除${payload.deleted_count}件`);
       await loadArchives();
     } catch (error) {
-      setText(archiveStatus, error.message, true);
+      setArchiveProcessingStatus(objectPath, error.message, null, true);
     } finally {
       setBusy(false);
     }

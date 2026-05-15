@@ -7,13 +7,22 @@
   {% if sites %}
     <section class="site-grid">
       {% for site in sites %}
-        <a class="site-card" href="/sites/{{ site.site_id }}">
+        <article class="site-card">
           <strong>{{ site.name }}</strong>
           <span>{{ site.site_id }}</span>
-          {% if site.public_url %}
-            <small>{{ site.public_url }}</small>
+          <div class="site-card-actions">
+            <a class="button secondary small" href="/sites/{{ site.site_id }}">管理</a>
+            {% if public_links.get(site.site_id) %}
+              <a class="button secondary small" href="{{ site.public_url }}" target="_blank" rel="noopener">公開サイト</a>
+            {% endif %}
+          </div>
+          {% if public_links.get(site.site_id) %}
+            <small>公開中: {{ site.public_url }}</small>
+            {% if published_zip_dates.get(site.site_id) %}
+              <small>元ZIP: {{ published_zip_dates.get(site.site_id) }}</small>
+            {% endif %}
           {% endif %}
-        </a>
+        </article>
       {% endfor %}
     </section>
   {% else %}
@@ -22,4 +31,3 @@
     </section>
   {% endif %}
 {% endblock %}
-

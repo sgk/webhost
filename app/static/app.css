@@ -126,12 +126,18 @@ a {
   gap: 8px;
   min-height: 116px;
   padding: 18px;
-  text-decoration: none;
 }
 
 .site-card span,
 .site-card small {
   color: var(--muted);
+}
+
+.site-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .button {

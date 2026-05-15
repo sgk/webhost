@@ -7,10 +7,13 @@ import json
 import logging
 import mimetypes
 import posixpath
+import queue
 from pathlib import Path
 import shutil
-from typing import Iterable
+import threading
+from typing import Callable, Iterable
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 import zipfile
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,6 +34,7 @@ templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger("uvicorn.error")
 
 EMPTY_PUBLISHED_OBJECT_PATH = "__empty__"
+DISPLAY_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
 
 class SignUploadRequest(BaseModel):
@@ -76,8 +80,17 @@ class ZipSummary:
     total_size: int
 
 
+ProgressCallback = Callable[[dict], None]
+
+
 def _json_error(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"detail": message}, status_code=status_code)
+
+
+def _format_display_datetime(value: datetime | None) -> str:
+    if not value:
+        return ""
+    return value.astimezone(DISPLAY_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
 
 def _require_history_bucket() -> None:
@@ -268,7 +281,7 @@ def _prepared_marker_path(site_id: str) -> Path:
     return root.parent / f"{root.name}.prepared"
 
 
-def _clear_directory(path: Path) -> int:
+def _clear_directory(path: Path, progress: ProgressCallback | None = None) -> int:
     count = 0
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
@@ -280,6 +293,8 @@ def _clear_directory(path: Path) -> int:
         else:
             child.unlink()
             count += 1
+        if progress:
+            progress({"stage": "clear", "deleted_count": count})
     return count
 
 
@@ -297,14 +312,17 @@ def _safe_staging_name(path: str) -> str:
     return normalized
 
 
-def _deploy_zip_to_directory(source_blob: storage.Blob, site: Site) -> dict:
+def _deploy_zip_to_directory(source_blob: storage.Blob, site: Site, progress: ProgressCallback | None = None) -> dict:
     target_dir = _staging_root(site.site_id)
-    deleted_count = _clear_directory(target_dir)
+    deleted_count = _clear_directory(target_dir, progress=progress)
     uploaded_count = 0
     with source_blob.open("rb") as stream:
         with zipfile.ZipFile(stream) as zf:
-            _validate_zip(zf, site)
-            for info in _zip_file_infos(zf):
+            summary = _validate_zip(zf, site)
+            infos = _zip_file_infos(zf)
+            if progress:
+                progress({"stage": "validated", "file_count": summary.file_count, "total_size": summary.total_size})
+            for info in infos:
                 try:
                     safe_name = _safe_staging_name(info.filename)
                 except HTTPException as exc:
@@ -317,6 +335,8 @@ def _deploy_zip_to_directory(source_blob: storage.Blob, site: Site) -> dict:
                     with target_path.open("wb") as output:
                         shutil.copyfileobj(file_handle, output)
                 uploaded_count += 1
+                if progress:
+                    progress({"stage": "extract", "uploaded_count": uploaded_count, "file_count": len(infos)})
     return {"deleted_count": deleted_count, "uploaded_count": uploaded_count}
 
 
@@ -353,12 +373,14 @@ def _clear_prepared_if_matches(site_id: str, object_paths: Iterable[str]) -> Non
         marker.unlink()
 
 
-def _verify_bucket_matches_manifest(bucket: storage.Bucket, expected_entries: dict[str, ZipEntry]) -> None:
+def _verify_bucket_matches_manifest(bucket: storage.Bucket, expected_entries: dict[str, ZipEntry], progress: ProgressCallback | None = None) -> None:
     blobs = {blob.name: blob for blob in bucket.list_blobs()}
     expected_names = set(expected_entries)
     actual_names = set(blobs)
     if actual_names != expected_names:
         raise HTTPException(status_code=409, detail="現公開ZIPと現公開内容のファイル一覧が一致しません。")
+    checked_count = 0
+    total_count = len(expected_entries)
     for name, expected in expected_entries.items():
         blob = blobs[name]
         if (blob.size or 0) != expected.size:
@@ -368,6 +390,9 @@ def _verify_bucket_matches_manifest(bucket: storage.Bucket, expected_entries: di
             raise HTTPException(status_code=409, detail=f"現公開内容のCRC32が一致しません: {name}")
         if metadata.get("site_zip_size") and metadata.get("site_zip_size") != str(expected.size):
             raise HTTPException(status_code=409, detail=f"現公開内容のメタデータサイズが一致しません: {name}")
+        checked_count += 1
+        if progress:
+            progress({"stage": "verify", "checked_count": checked_count, "file_count": total_count})
 
 
 def _load_current_published_manifest(history_bucket: storage.Bucket, public_bucket: storage.Bucket, site: Site) -> dict[str, ZipEntry]:
@@ -385,18 +410,29 @@ def _load_current_published_manifest(history_bucket: storage.Bucket, public_buck
     return _read_zip_manifest(current_blob, site)
 
 
-def _delete_bucket_object_names(bucket: storage.Bucket, object_names: set[str]) -> int:
+def _delete_bucket_object_names(bucket: storage.Bucket, object_names: set[str], progress: ProgressCallback | None = None) -> int:
     deleted_count = 0
     for object_name in sorted(object_names):
         bucket.blob(object_name).delete()
         deleted_count += 1
+        if progress:
+            progress({"stage": "delete", "deleted_count": deleted_count})
     return deleted_count
 
 
-def _deploy_zip_to_bucket(source_blob: storage.Blob, target_bucket: storage.Bucket, current_entries: dict[str, ZipEntry], site: Site) -> dict:
+def _deploy_zip_to_bucket(
+    source_blob: storage.Blob,
+    target_bucket: storage.Bucket,
+    current_entries: dict[str, ZipEntry],
+    site: Site,
+    progress: ProgressCallback | None = None,
+) -> dict:
     with source_blob.open("rb") as stream:
         with zipfile.ZipFile(stream) as zf:
             new_entries = _zip_manifest(zf, site)
+            if progress:
+                progress({"stage": "validated", "file_count": len(new_entries)})
+            _verify_bucket_matches_manifest(target_bucket, current_entries, progress=progress)
             changed_infos = []
             for info in _zip_file_infos(zf):
                 current_entry = current_entries.get(info.filename)
@@ -404,6 +440,16 @@ def _deploy_zip_to_bucket(source_blob: storage.Blob, target_bucket: storage.Buck
                     continue
                 changed_infos.append(info)
             removed_names = set(current_entries) - set(new_entries)
+            if progress:
+                progress(
+                    {
+                        "stage": "diff",
+                        "changed_count": len(changed_infos),
+                        "deleted_count": len(removed_names),
+                        "skipped_count": len(new_entries) - len(changed_infos),
+                        "file_count": len(new_entries),
+                    }
+                )
             copied_count = 0
             for info in changed_infos:
                 entry = new_entries[info.filename]
@@ -414,7 +460,9 @@ def _deploy_zip_to_bucket(source_blob: storage.Blob, target_bucket: storage.Buck
                     _set_zip_entry_metadata(target_blob, entry)
                     target_blob.upload_from_file(file_handle, content_type=content_type or "application/octet-stream")
                     copied_count += 1
-            deleted_count = _delete_bucket_object_names(target_bucket, removed_names)
+                    if progress:
+                        progress({"stage": "upload", "copied_count": copied_count, "file_count": len(changed_infos)})
+            deleted_count = _delete_bucket_object_names(target_bucket, removed_names, progress=progress)
     return {
         "deleted_count": deleted_count,
         "copied_count": copied_count,
@@ -454,12 +502,31 @@ async def sites_index(request: Request):
         return auth
     db = get_client()
     sites = list_admin_sites(db, str(auth.get("email") or ""))
+    public_links = {}
+    published_zip_dates = {}
+    try:
+        storage_client = storage.Client()
+        history_bucket = _history_bucket(storage_client)
+        for site in sites:
+            published_object_path = _load_published_object_path(history_bucket, site.site_id)
+            is_published = bool(
+                site.public_url and published_object_path and not _is_empty_published_object_path(published_object_path)
+            )
+            public_links[site.site_id] = is_published
+            if is_published:
+                archive_blob = history_bucket.blob(published_object_path)
+                archive_blob.reload()
+                published_zip_dates[site.site_id] = _format_display_datetime(archive_blob.time_created)
+    except Exception as exc:
+        logger.warning("サイト一覧の公開状態を読み込めませんでした: %s", exc)
     return templates.TemplateResponse(
         "sites.html",
         {
             "request": request,
             "title": "サイト一覧",
             "sites": sites,
+            "public_links": public_links,
+            "published_zip_dates": published_zip_dates,
             "admin_email": auth.get("email"),
             "admin_picture": auth.get("picture"),
         },
@@ -563,12 +630,70 @@ async def prepare_staging(request: Request, site_id: str, payload: DeployRequest
     source_blob = bucket.blob(payload.object_path)
     if not source_blob.exists():
         raise HTTPException(status_code=404, detail="履歴ZIPが見つかりません。")
-    result = _deploy_zip_to_directory(source_blob, site)
-    _mark_prepared_archive(site.site_id, payload.object_path)
-    return JSONResponse({"status": "ok", "target": "staging", "object_path": payload.object_path, **result})
+
+    def stream_prepare_progress():
+        def emit(event: dict) -> str:
+            return json.dumps(event, ensure_ascii=False) + "\n"
+
+        progress_queue: queue.Queue[dict | None] = queue.Queue()
+
+        def enqueue_progress(event: dict) -> None:
+            if event["stage"] == "validated":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "validated",
+                        "message": f"ZIPを確認しました。{event['file_count']}件を展開します。",
+                        "progress": 20,
+                    }
+                )
+            elif event["stage"] == "clear":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "clear",
+                        "message": f"確認サイトを空にしています。{event['deleted_count']}件",
+                        "progress": 10,
+                    }
+                )
+            elif event["stage"] == "extract":
+                file_count = event["file_count"] or 1
+                uploaded_count = event["uploaded_count"]
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "extract",
+                        "message": f"確認サイトへ展開しています。{uploaded_count}/{file_count}件",
+                        "progress": min(20 + round((uploaded_count / file_count) * 75), 95),
+                    }
+                )
+
+        def run_prepare() -> None:
+            try:
+                result = _deploy_zip_to_directory(source_blob, site, progress=enqueue_progress)
+                progress_queue.put({"status": "progress", "stage": "marker", "message": "確認サイトを記録しています。", "progress": 98})
+                _mark_prepared_archive(site.site_id, payload.object_path)
+                progress_queue.put({"status": "ok", "target": "staging", "object_path": payload.object_path, "progress": 100, **result})
+            except Exception as exc:
+                logger.exception("確認サイトの準備に失敗しました。")
+                message = exc.detail if isinstance(exc, HTTPException) else "確認サイトの準備に失敗しました。"
+                progress_queue.put({"status": "error", "message": message})
+            finally:
+                progress_queue.put(None)
+
+        thread = threading.Thread(target=run_prepare, daemon=True)
+        thread.start()
+        yield emit({"status": "progress", "stage": "start", "message": "確認サイトの準備を開始しています。", "progress": 0})
+        while True:
+            event = progress_queue.get()
+            if event is None:
+                break
+            yield emit(event)
+
+    return StreamingResponse(stream_prepare_progress(), media_type="application/x-ndjson")
 
 
-@router.post("/sites/{site_id}/api/publish", response_class=JSONResponse)
+@router.post("/sites/{site_id}/api/publish")
 async def publish_site(request: Request, site_id: str, payload: PublishRequest):
     site = _require_site_admin(request, site_id)
     if isinstance(site, RedirectResponse):
@@ -585,16 +710,92 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
     if not source_blob.exists():
         raise HTTPException(status_code=404, detail="履歴ZIPが見つかりません。")
 
-    current_entries = _load_current_published_manifest(history_bucket, public_bucket, site)
-    _verify_bucket_matches_manifest(public_bucket, current_entries)
-    result = _deploy_zip_to_bucket(source_blob, public_bucket, current_entries, site)
-    _save_published_marker(history_bucket, site.site_id, payload.object_path)
-    source_blob.reload()
-    metadata = dict(source_blob.metadata or {})
-    metadata["last_published_at"] = datetime.utcnow().isoformat() + "Z"
-    source_blob.metadata = metadata
-    source_blob.patch()
-    return JSONResponse({"status": "ok", "target": "prod", "object_path": payload.object_path, **result})
+    def stream_publish_progress():
+        def emit(event: dict) -> str:
+            return json.dumps(event, ensure_ascii=False) + "\n"
+
+        progress_queue: queue.Queue[dict | None] = queue.Queue()
+
+        def enqueue_progress(event: dict) -> None:
+            if event["stage"] == "validated":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "validated",
+                        "message": f"ZIPを確認しました。{event['file_count']}件を公開します。",
+                        "progress": 10,
+                    }
+                )
+            elif event["stage"] == "verify":
+                file_count = event["file_count"] or 1
+                checked_count = event["checked_count"]
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "verify",
+                        "message": f"現公開内容を確認しています。{checked_count}/{file_count}件",
+                        "progress": min(10 + round((checked_count / file_count) * 10), 20),
+                    }
+                )
+            elif event["stage"] == "diff":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "diff",
+                        "message": f"差分を確認しました。送信{event['changed_count']}件 / 削除{event['deleted_count']}件 / 変更なし{event['skipped_count']}件",
+                        "progress": 20,
+                    }
+                )
+            elif event["stage"] == "upload":
+                file_count = event["file_count"] or 1
+                copied_count = event["copied_count"]
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "upload",
+                        "message": f"公開先へアップロードしています。{copied_count}/{file_count}件",
+                        "progress": min(20 + round((copied_count / file_count) * 70), 90),
+                    }
+                )
+            elif event["stage"] == "delete":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "delete",
+                        "message": f"不要な公開ファイルを削除しています。{event['deleted_count']}件",
+                        "progress": 95,
+                    }
+                )
+
+        def run_publish() -> None:
+            try:
+                current_entries = _load_current_published_manifest(history_bucket, public_bucket, site)
+                result = _deploy_zip_to_bucket(source_blob, public_bucket, current_entries, site, progress=enqueue_progress)
+                progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
+                _save_published_marker(history_bucket, site.site_id, payload.object_path)
+                source_blob.reload()
+                metadata = dict(source_blob.metadata or {})
+                metadata["last_published_at"] = datetime.utcnow().isoformat() + "Z"
+                source_blob.metadata = metadata
+                source_blob.patch()
+                progress_queue.put({"status": "ok", "target": "prod", "object_path": payload.object_path, "progress": 100, **result})
+            except Exception as exc:
+                logger.exception("公開処理に失敗しました。")
+                message = exc.detail if isinstance(exc, HTTPException) else "公開に失敗しました。"
+                progress_queue.put({"status": "error", "message": message})
+            finally:
+                progress_queue.put(None)
+
+        thread = threading.Thread(target=run_publish, daemon=True)
+        thread.start()
+        yield emit({"status": "progress", "stage": "start", "message": "公開を開始しています。", "progress": 0})
+        while True:
+            event = progress_queue.get()
+            if event is None:
+                break
+            yield emit(event)
+
+    return StreamingResponse(stream_publish_progress(), media_type="application/x-ndjson")
 
 
 @router.post("/sites/{site_id}/api/publish-empty", response_class=JSONResponse)
