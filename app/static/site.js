@@ -115,6 +115,44 @@
     return completedPayload;
   };
 
+  const readStatusProgressStream = async (response, fallbackMessage) => {
+    if (!response.body) {
+      throw new Error("処理の進捗を読み込めませんでした。");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let completedPayload = null;
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) {
+          continue;
+        }
+        const event = JSON.parse(line);
+        if (event.status === "error") {
+          throw new Error(event.message || "処理に失敗しました。");
+        }
+        if (event.status === "ok") {
+          completedPayload = event;
+          setText(archiveStatus, "完了しました。");
+          continue;
+        }
+        setText(archiveStatus, event.message || fallbackMessage);
+      }
+      if (done) {
+        break;
+      }
+    }
+    if (!completedPayload) {
+      throw new Error("処理の完了を確認できませんでした。");
+    }
+    return completedPayload;
+  };
+
   const archiveApiPath = (objectPath) => {
     const prefix = `sites/${site.siteId}/archive/`;
     return objectPath.replace(prefix, "").split("/").map(encodeURIComponent).join("/");
@@ -593,11 +631,16 @@
     clearArchiveProcessingStatuses();
     setText(archiveStatus, "本番を空にしています...");
     try {
-      await requestJson(api("/api/publish-empty"), {
+      const response = await fetch(api("/api/publish-empty"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: "prod" }),
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "本番を空にできませんでした。");
+      }
+      await readStatusProgressStream(response, "本番を空にしています。");
       showToast("本番を空にしました。");
       setText(archiveStatus, "");
       await loadArchives();

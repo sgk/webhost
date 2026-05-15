@@ -20,6 +20,7 @@ class Site:
     public_url: str
     published_object_path: str
     published_zip_created_at: datetime | None
+    html_charset: str
     enabled: bool
     archive_limit: int
     upload_max_total_mb: int
@@ -79,6 +80,7 @@ def site_from_doc(doc: firestore.DocumentSnapshot) -> Site:
         public_url=str(data.get("public_url") or "").rstrip("/"),
         published_object_path=str(data.get("published_object_path") or ""),
         published_zip_created_at=_datetime_or_none(data.get("published_zip_created_at")),
+        html_charset=str(data.get("html_charset") or "").strip(),
         enabled=bool(data.get("enabled", True)),
         archive_limit=_int_or_default(data.get("archive_limit"), settings.default_archive_limit),
         upload_max_total_mb=_int_or_default(data.get("upload_max_total_mb"), settings.default_upload_max_total_mb),

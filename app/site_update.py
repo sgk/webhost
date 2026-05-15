@@ -244,6 +244,17 @@ def _set_zip_entry_metadata(blob: storage.Blob, entry: ZipEntry) -> None:
     }
 
 
+def _content_type_for_public_object(name: str, site: Site) -> str:
+    content_type, _ = mimetypes.guess_type(name)
+    if site.html_charset and (name.endswith(".html") or name.endswith(".htm")):
+        return f"text/html; charset={site.html_charset}"
+    return content_type or "application/octet-stream"
+
+
+def _should_refresh_public_object(name: str, site: Site) -> bool:
+    return bool(site.html_charset and (name.endswith(".html") or name.endswith(".htm")))
+
+
 def _published_marker_blob(bucket: storage.Bucket, site_id: str) -> storage.Blob:
     return bucket.blob(_published_marker_path(site_id))
 
@@ -466,7 +477,7 @@ def _deploy_zip_to_bucket(
                 if not _is_public_object_path_supported(info.filename):
                     continue
                 current_entry = current_entries.get(info.filename)
-                if current_entry and _same_zip_content(current_entry, new_entries[info.filename]):
+                if current_entry and _same_zip_content(current_entry, new_entries[info.filename]) and not _should_refresh_public_object(info.filename, site):
                     continue
                 changed_infos.append(info)
             removed_names = set(current_entries) - set(new_entries)
@@ -484,11 +495,10 @@ def _deploy_zip_to_bucket(
             for info in changed_infos:
                 entry = new_entries[info.filename]
                 with zf.open(info) as file_handle:
-                    content_type, _ = mimetypes.guess_type(info.filename)
                     target_blob = target_bucket.blob(info.filename)
                     target_blob.cache_control = "no-cache, max-age=0"
                     _set_zip_entry_metadata(target_blob, entry)
-                    target_blob.upload_from_file(file_handle, content_type=content_type or "application/octet-stream")
+                    target_blob.upload_from_file(file_handle, content_type=_content_type_for_public_object(info.filename, site))
                     copied_count += 1
                     if progress:
                         progress({"stage": "upload", "copied_count": copied_count, "file_count": len(changed_infos)})
@@ -500,11 +510,15 @@ def _deploy_zip_to_bucket(
     }
 
 
-def _deploy_empty_index_to_bucket(target_bucket: storage.Bucket) -> dict:
+def _deploy_empty_index_to_bucket(target_bucket: storage.Bucket, progress: ProgressCallback | None = None) -> dict:
     deleted_count = 0
     for blob in target_bucket.list_blobs():
         blob.delete()
         deleted_count += 1
+        if progress:
+            progress({"stage": "delete", "deleted_count": deleted_count})
+    if progress:
+        progress({"stage": "index", "deleted_count": deleted_count})
     index_blob = target_bucket.blob("index.html")
     index_blob.cache_control = "no-cache, max-age=0"
     _set_zip_entry_metadata(index_blob, _empty_index_manifest()["index.html"])
@@ -824,7 +838,7 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
     return StreamingResponse(stream_publish_progress(), media_type="application/x-ndjson")
 
 
-@router.post("/sites/{site_id}/api/publish-empty", response_class=JSONResponse)
+@router.post("/sites/{site_id}/api/publish-empty")
 async def publish_empty(request: Request, site_id: str, payload: PublishEmptyRequest):
     site = _require_site_admin(request, site_id)
     if isinstance(site, RedirectResponse):
@@ -834,10 +848,57 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
     client = storage.Client()
     history_bucket = _history_bucket(client)
     public_bucket = client.bucket(site.public_bucket)
-    result = _deploy_empty_index_to_bucket(public_bucket)
-    _save_published_marker(history_bucket, site.site_id, EMPTY_PUBLISHED_OBJECT_PATH)
-    _save_site_publish_state(site, EMPTY_PUBLISHED_OBJECT_PATH, None)
-    return JSONResponse({"status": "ok", "target": "prod", "object_path": "", **result})
+
+    def stream_empty_progress():
+        def emit(event: dict) -> str:
+            return json.dumps(event, ensure_ascii=False) + "\n"
+
+        progress_queue: queue.Queue[dict | None] = queue.Queue()
+
+        def enqueue_progress(event: dict) -> None:
+            if event["stage"] == "delete":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "delete",
+                        "message": f"公開ファイルを削除しています。{event['deleted_count']}件",
+                        "progress": None,
+                    }
+                )
+            elif event["stage"] == "index":
+                progress_queue.put(
+                    {
+                        "status": "progress",
+                        "stage": "index",
+                        "message": "空のindex.htmlを設置しています。",
+                        "progress": 90,
+                    }
+                )
+
+        def run_publish_empty() -> None:
+            try:
+                result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress)
+                progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
+                _save_published_marker(history_bucket, site.site_id, EMPTY_PUBLISHED_OBJECT_PATH)
+                _save_site_publish_state(site, EMPTY_PUBLISHED_OBJECT_PATH, None)
+                progress_queue.put({"status": "ok", "target": "prod", "object_path": "", "progress": 100, **result})
+            except Exception as exc:
+                logger.exception("本番を空にする処理に失敗しました。")
+                message = exc.detail if isinstance(exc, HTTPException) else "本番を空にできませんでした。"
+                progress_queue.put({"status": "error", "message": message})
+            finally:
+                progress_queue.put(None)
+
+        thread = threading.Thread(target=run_publish_empty, daemon=True)
+        thread.start()
+        yield emit({"status": "progress", "stage": "start", "message": "本番を空にする処理を開始しています。", "progress": 0})
+        while True:
+            event = progress_queue.get()
+            if event is None:
+                break
+            yield emit(event)
+
+    return StreamingResponse(stream_empty_progress(), media_type="application/x-ndjson")
 
 
 @router.get("/sites/{site_id}/api/archives", response_class=JSONResponse)
@@ -973,7 +1034,7 @@ async def staging_site(request: Request, site_id: str, path: str):
     file_path = (staging_dir / object_name).resolve()
     if not file_path.is_relative_to(staging_dir) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="not found")
-    media_type = mimetypes.guess_type(object_name)[0] or "application/octet-stream"
+    media_type = _content_type_for_public_object(object_name, site)
     return FileResponse(file_path, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
