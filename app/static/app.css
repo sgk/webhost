@@ -27,6 +27,10 @@ a {
   color: inherit;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .topbar {
   display: flex;
   align-items: center;
