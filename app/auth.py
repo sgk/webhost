@@ -154,7 +154,7 @@ async def login(request: Request, next: str | None = None):
     if session:
         return RedirectResponse(url=_normalize_next_path(next), status_code=303)
     if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
-        return _render_login(request, "Googleログインの設定が未完了です。", next)
+        return _render_login(request, make_translator(request_language(request))("login.error.config"), next)
     return _render_login(request, None, next)
 
 
@@ -173,7 +173,7 @@ async def logout(request: Request):
 @router.get("/auth/google")
 async def auth_google(request: Request, next: str | None = None):
     if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
-        return _render_login(request, "Googleログインの設定が未完了です。", next)
+        return _render_login(request, make_translator(request_language(request))("login.error.config"), next)
     state = secrets.token_urlsafe(16)
     normalized_next = _normalize_next_path(next)
     redirect_uri = f"{_base_url(request)}/auth/google/callback"
@@ -210,12 +210,12 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
     next_cookie = request.cookies.get(ADMIN_OAUTH_NEXT_COOKIE, "")
     next_path = _normalize_next_path(unquote(next_cookie) if next_cookie else "")
     if error:
-        return _render_login(request, "Googleログインに失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.failed"), next_path)
     state_cookie = request.cookies.get(ADMIN_OAUTH_STATE_COOKIE, "")
     if not state or state != state_cookie:
-        return _render_login(request, "ログイン状態の検証に失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.state"), next_path)
     if not code:
-        return _render_login(request, "ログインコードが取得できませんでした。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.code"), next_path)
 
     redirect_uri = f"{_base_url(request)}/auth/google/callback"
     token_response = requests.post(
@@ -230,22 +230,22 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
         timeout=10,
     )
     if not token_response.ok:
-        return _render_login(request, "Googleログインに失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.failed"), next_path)
     token_data = token_response.json()
     id_token = token_data.get("id_token")
     if not id_token:
-        return _render_login(request, "Googleログインに失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.failed"), next_path)
 
     info_response = requests.get(GOOGLE_TOKENINFO_URL, params={"id_token": id_token}, timeout=10)
     if not info_response.ok:
-        return _render_login(request, "Googleログインに失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.failed"), next_path)
     info = info_response.json()
     if info.get("aud") != settings.google_oauth_client_id:
-        return _render_login(request, "Googleログインの検証に失敗しました。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.verify"), next_path)
 
     email = str(info.get("email") or "").strip().lower()
     if not email or info.get("email_verified") not in ("true", True):
-        return _render_login(request, "確認済みのメールアドレスを取得できませんでした。", next_path)
+        return _render_login(request, make_translator(request_language(request))("login.error.email"), next_path)
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=settings.admin_session_ttl_hours)
