@@ -309,7 +309,7 @@
     if (Number.isNaN(date.getTime())) {
       return value || "";
     }
-    return date.toLocaleString("ja-JP");
+    return date.toLocaleString(lang === "en" ? "en-US" : "ja-JP");
   };
 
   const createButton = (label, className, onClick, disabled = isBusy) => {
