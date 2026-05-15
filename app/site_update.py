@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from app.auth import require_admin
 from app.config import load_settings
-from app.firestore import Site, get_client, get_site, is_site_admin, list_admin_sites
+from app.firestore import Site, get_client, get_collection, get_site, is_site_admin, list_admin_sites
 
 settings = load_settings()
 router = APIRouter()
@@ -251,6 +251,16 @@ def _save_published_marker(bucket: storage.Bucket, site_id: str, object_path: st
         json.dumps(payload, ensure_ascii=False),
         content_type="application/json",
     )
+
+
+def _save_site_publish_state(site: Site, object_path: str, zip_created_at: datetime | None) -> None:
+    db = get_client()
+    data = {
+        "published_object_path": object_path,
+        "published_zip_created_at": zip_created_at,
+        "updated_at": datetime.utcnow(),
+    }
+    get_collection(db, "sites").document(site.site_id).set(data, merge=True)
 
 
 def _is_empty_published_object_path(object_path: str) -> bool:
@@ -502,23 +512,19 @@ async def sites_index(request: Request):
         return auth
     db = get_client()
     sites = list_admin_sites(db, str(auth.get("email") or ""))
-    public_links = {}
-    published_zip_dates = {}
-    try:
-        storage_client = storage.Client()
-        history_bucket = _history_bucket(storage_client)
-        for site in sites:
-            published_object_path = _load_published_object_path(history_bucket, site.site_id)
-            is_published = bool(
-                site.public_url and published_object_path and not _is_empty_published_object_path(published_object_path)
-            )
-            public_links[site.site_id] = is_published
-            if is_published:
-                archive_blob = history_bucket.blob(published_object_path)
-                archive_blob.reload()
-                published_zip_dates[site.site_id] = _format_display_datetime(archive_blob.time_created)
-    except Exception as exc:
-        logger.warning("サイト一覧の公開状態を読み込めませんでした: %s", exc)
+    public_links = {
+        site.site_id: bool(
+            site.public_url
+            and site.published_object_path
+            and not _is_empty_published_object_path(site.published_object_path)
+        )
+        for site in sites
+    }
+    published_zip_dates = {
+        site.site_id: _format_display_datetime(site.published_zip_created_at)
+        for site in sites
+        if public_links.get(site.site_id)
+    }
     return templates.TemplateResponse(
         "sites.html",
         {
@@ -778,6 +784,7 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
                 metadata["last_published_at"] = datetime.utcnow().isoformat() + "Z"
                 source_blob.metadata = metadata
                 source_blob.patch()
+                _save_site_publish_state(site, payload.object_path, source_blob.time_created)
                 progress_queue.put({"status": "ok", "target": "prod", "object_path": payload.object_path, "progress": 100, **result})
             except Exception as exc:
                 logger.exception("公開処理に失敗しました。")
@@ -810,6 +817,7 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
     public_bucket = client.bucket(site.public_bucket)
     result = _deploy_empty_index_to_bucket(public_bucket)
     _save_published_marker(history_bucket, site.site_id, EMPTY_PUBLISHED_OBJECT_PATH)
+    _save_site_publish_state(site, EMPTY_PUBLISHED_OBJECT_PATH, None)
     return JSONResponse({"status": "ok", "target": "prod", "object_path": "", **result})
 
 

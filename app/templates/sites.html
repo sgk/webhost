@@ -5,24 +5,36 @@
   </section>
 
   {% if sites %}
-    <section class="site-grid">
+    <section class="site-list" aria-label="管理サイト">
+      <div class="site-list-row site-list-head">
+        <span>サイト</span>
+        <span>公開状態</span>
+        <span>元ZIP</span>
+        <span>操作</span>
+      </div>
       {% for site in sites %}
-        <article class="site-card">
-          <strong>{{ site.name }}</strong>
-          <span>{{ site.site_id }}</span>
-          <div class="site-card-actions">
-            <a class="button secondary small" href="/sites/{{ site.site_id }}">管理</a>
+        <div class="site-list-row">
+          <div class="site-list-name">
+            <strong>{{ site.name }}</strong>
+          </div>
+          <div class="site-list-status">
             {% if public_links.get(site.site_id) %}
-              <a class="button secondary small" href="{{ site.public_url }}" target="_blank" rel="noopener">公開サイト</a>
+              <a href="{{ site.public_url }}" target="_blank" rel="noopener">{{ site.public_url }}</a>
+            {% else %}
+              <span class="muted">未公開</span>
             {% endif %}
           </div>
-          {% if public_links.get(site.site_id) %}
-            <small>公開中: {{ site.public_url }}</small>
-            {% if published_zip_dates.get(site.site_id) %}
-              <small>元ZIP: {{ published_zip_dates.get(site.site_id) }}</small>
+          <div class="site-list-date">
+            {% if public_links.get(site.site_id) and published_zip_dates.get(site.site_id) %}
+              {{ published_zip_dates.get(site.site_id) }}
+            {% else %}
+              <span class="muted">-</span>
             {% endif %}
-          {% endif %}
-        </article>
+          </div>
+          <div class="site-list-actions">
+            <a class="button secondary small" href="/sites/{{ site.site_id }}">管理</a>
+          </div>
+        </div>
       {% endfor %}
     </section>
   {% else %}
