@@ -3,6 +3,11 @@ export GCP_CONFIG_NAME=webhost
 export GCP_PROJECT_ID=your-project-id
 export GCP_ACCOUNT=you@example.com
 
+# Cloud Run deploy settings
+export SERVICE_NAME=webhost
+export REGION=asia-northeast1
+export SERVICE_ACCOUNT=webhost-app@your-project-id.iam.gserviceaccount.com
+
 # Base URL (used for OAuth redirect)
 export BASE_URL=https://example.com
 
@@ -24,4 +29,3 @@ export DEFAULT_ARCHIVE_LIMIT=10
 export DEFAULT_UPLOAD_MAX_TOTAL_MB=200
 export DEFAULT_UPLOAD_MAX_FILES=2000
 export DEFAULT_UPLOAD_MAX_FILE_MB=50
-

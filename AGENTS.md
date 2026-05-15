@@ -84,14 +84,14 @@
 ## 環境前提条件
 
 - GCP 認証が済んでいること（`gcloud auth login`、適切なプロジェクト選択）。
-- ローカルでブラウザ確認を行うときは、`http://127.0.0.1:5000` ではなく `http://localhost:5000` を使うこと。
-  - `127.0.0.1:5000` では認証で弾かれることがあります。
+- ローカルでブラウザ確認を行うときは、`http://127.0.0.1:7000` ではなく `http://localhost:7000` を使うこと。
+  - `127.0.0.1:7000` では認証で弾かれることがあります。
 - ローカルで人間にブラウザを表示させる必要があるときは、個人用の既存 Chrome プロファイルを使ってはいけません。
   - 原則として、リポジトリ直下の `.chrome` ディレクトリを Chrome の `--user-data-dir` に指定して起動します。
-  - 例: `google-chrome-stable --user-data-dir="$PWD/.chrome" --new-window http://localhost:5000/entry`
+  - 例: `google-chrome-stable --user-data-dir="$PWD/.chrome" --new-window http://localhost:7000/`
 - ローカルでブラウザ確認を行うときは、Playwright ではなく Chrome DevTools を使うこと。
   - ヘッドレスではなく、必ずヘッド有りの Chrome を使います。
-  - すでに `localhost:5000` を開いている Chrome ウィンドウがある場合は、そのページをそのまま使います。
+  - すでに `localhost:7000` を開いている Chrome ウィンドウがある場合は、そのページをそのまま使います。
   - 新しく Chrome を開く必要がある場合も、`.chrome` を `--user-data-dir` に指定します。
 - ローカルでのログイン操作は人間が行います。
   - エージェントはログイン画面まで表示し、認証やアカウント選択は人間に委ねてください。
@@ -101,7 +101,6 @@
 - 作業の最後には、エージェント自身が確認用に起動した Chrome を終了してください。
   - 人間が使っていた既存の Chrome ウィンドウは終了してはいけません。
   - Chrome DevTools 用にエージェント自身が起動した専用プロファイルの Chrome だけを終了対象にします。
-- デプロイ先: Cloud Run サービス `journal-entry`（リージョン: `asia-northeast1`）。
+- デプロイ先のCloud Runサービス名、リージョン、GCPプロジェクトIDは `.env-deploy` で指定する。
 - Cloud Build/Artifact Registry へ push 可能な権限があること。
-- Firestore（Native）および添付ファイル用の GCS バケットが存在し、サービスアカウントに権限が付与されていること。
-  - 例: `DATABASE_URL=firestore:journal-entry-455202/journal` の場合、既定バケットは `{project-id}-attachments`。
+- Firestore（Native）、履歴用GCSバケット、サイト公開用GCSバケットが存在し、サービスアカウントに権限が付与されていること。

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="heading">
+    <h1>サイト一覧</h1>
+  </section>
+
+  {% if sites %}
+    <section class="site-grid">
+      {% for site in sites %}
+        <a class="site-card" href="/sites/{{ site.site_id }}">
+          <strong>{{ site.name }}</strong>
+          <span>{{ site.site_id }}</span>
+          {% if site.public_url %}
+            <small>{{ site.public_url }}</small>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="panel">
+      <p class="muted">管理できるサイトはありません。</p>
+    </section>
+  {% endif %}
+{% endblock %}
+

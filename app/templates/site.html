@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="heading split">
+    <div>
+      <a class="back-link" href="/sites">サイト一覧</a>
+      <h1>{{ site.name }}</h1>
+      <p class="muted">{{ site.site_id }} / gs://{{ site.public_bucket }}</p>
+    </div>
+    <div class="heading-actions">
+      {% if site.public_url %}
+        <a class="button secondary" href="{{ site.public_url }}" target="_blank" rel="noopener">本番を開く</a>
+      {% endif %}
+      <a class="button secondary" href="/sites/{{ site.site_id }}/staging/" target="_blank" rel="noopener">確認サイト</a>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>ZIPアップロード</h2>
+    <input type="file" id="zip-file" class="file-input" accept=".zip,application/zip" />
+    <div id="drop-zone" class="drop-zone" role="button" tabindex="0">
+      <strong>ZIPをここにドロップ</strong>
+      <span>またはクリックして選択</span>
+    </div>
+    <p class="status-line" id="upload-status"></p>
+  </section>
+
+  <section class="panel">
+    <div class="section-title">
+      <h2>履歴</h2>
+      <p class="status-line" id="archive-status"></p>
+    </div>
+    <div class="toolbar">
+      <button type="button" class="button secondary" id="reload-button">再読み込み</button>
+      <button type="button" class="button danger" id="delete-button" disabled>選択した履歴を削除</button>
+      <button type="button" class="button danger" id="publish-empty-button">本番を空にする</button>
+    </div>
+    <div id="archives-list" class="archive-list"></div>
+  </section>
+
+  <script>
+    window.WEBHOST_SITE = {
+      siteId: {{ site.site_id | tojson }},
+      siteName: {{ site.name | tojson }},
+      publicUrl: {{ site.public_url | tojson }},
+    };
+  </script>
+  <script src="/static/site.js?v=20260515-badge-link"></script>
+{% endblock %}
