@@ -17,8 +17,115 @@
   let processingArchives = [];
   let archiveProcessingStatuses = new Map();
   let archivePollTimer = null;
+  const lang = window.WEBHOST_LANG === "en" ? "en" : "ja";
+  const messages = {
+    ja: {
+      busy: t("busy"),
+      failed: t("failed"),
+      progressReadFailed: t("progressReadFailed"),
+      completionUnknown: t("completionUnknown"),
+      done: t("done"),
+      downloadZip: t("downloadZip"),
+      noNote: t("noNote"),
+      saving: t("saving"),
+      save: t("save"),
+      cancel: t("cancel"),
+      noteSaved: t("noteSaved"),
+      noArchives: t("noArchives"),
+      cannotSelectProcessing: t("cannotSelectProcessing"),
+      cannotDeletePublished: t("cannotDeletePublished"),
+      selectForDelete: t("selectForDelete"),
+      published: t("published"),
+      openProduction: t("openProduction"),
+      staging: t("staging"),
+      openStaging: t("openStaging"),
+      failedLabel: t("failedLabel"),
+      processingLabel: t("processingLabel"),
+      prepareStaging: t("prepareStaging"),
+      publish: t("publish"),
+      loadingArchives: t("loadingArchives"),
+      archivesCount: "履歴 {count}/{limit} 件",
+      chooseZip: t("chooseZip"),
+      signingUpload: t("signingUpload"),
+      uploadingZip: t("uploadingZip"),
+      uploadFailed: t("uploadFailed"),
+      addingArchive: t("addingArchive"),
+      archiveAdded: "履歴に追加しました。{count}件",
+      prepareStarting: t("prepareStarting"),
+      prepareFailed: t("prepareFailed"),
+      preparingStaging: t("preparingStaging"),
+      preparedStaging: t("preparedStaging"),
+      preparingBeforePublish: t("preparingBeforePublish"),
+      confirmPublish: "{siteName} にこの履歴を公開します。よろしいですか？",
+      publishStarting: t("publishStarting"),
+      publishFailed: t("publishFailed"),
+      publishing: t("publishing"),
+      publishedToast: "公開しました。送信{copied}件 / 削除{deleted}件",
+      confirmEmpty: "{siteName} の本番を空にします。履歴から復旧できます。よろしいですか？",
+      emptyingProduction: t("emptyingProduction"),
+      emptyFailed: t("emptyFailed"),
+      emptiedProduction: t("emptiedProduction"),
+      confirmDelete: "{count}件の履歴を削除します。よろしいですか？",
+      deletingArchives: t("deletingArchives"),
+      deletedArchives: t("deletedArchives"),
+    },
+    en: {
+      busy: "Processing.",
+      failed: "Operation failed.",
+      progressReadFailed: "Could not read progress.",
+      completionUnknown: "Could not confirm completion.",
+      done: "Done.",
+      downloadZip: "Download archive ZIP",
+      noNote: "No note",
+      saving: "Saving",
+      save: "Save",
+      cancel: "Cancel",
+      noteSaved: "Note saved.",
+      noArchives: "No archives.",
+      cannotSelectProcessing: "Processing archives cannot be selected",
+      cannotDeletePublished: "Published archives cannot be deleted",
+      selectForDelete: "Select for deletion",
+      published: "Published",
+      openProduction: "Open production site",
+      staging: "Staging",
+      openStaging: "Open staging site",
+      failedLabel: "Failed",
+      processingLabel: "Processing",
+      prepareStaging: "Prepare staging site",
+      publish: "Publish",
+      loadingArchives: "Loading archives...",
+      archivesCount: "Archives {count}/{limit}",
+      chooseZip: "Choose a ZIP file.",
+      signingUpload: "Getting signed URL...",
+      uploadingZip: "Uploading ZIP...",
+      uploadFailed: "ZIP upload failed.",
+      addingArchive: "Adding to archive...",
+      archiveAdded: "Added to archive. {count} files",
+      prepareStarting: "Starting staging preparation.",
+      prepareFailed: "Failed to prepare staging site.",
+      preparingStaging: "Preparing staging site.",
+      preparedStaging: "Staging site is ready.",
+      preparingBeforePublish: "Preparing staging before publishing.",
+      confirmPublish: "Publish this archive to {siteName}?",
+      publishStarting: "Starting publish.",
+      publishFailed: "Publish failed.",
+      publishing: "Publishing.",
+      publishedToast: "Published. Uploaded {copied} / deleted {deleted}",
+      confirmEmpty: "Empty production for {siteName}? You can restore from archives.",
+      emptyingProduction: "Emptying production...",
+      emptyFailed: "Could not empty production.",
+      emptiedProduction: "Production emptied.",
+      confirmDelete: "Delete {count} archives?",
+      deletingArchives: "Deleting archives...",
+      deletedArchives: "Archives deleted.",
+    },
+  };
 
   const api = (path) => `/sites/${encodeURIComponent(site.siteId)}${path}`;
+  const t = (key, values = {}) => {
+    const template = messages[lang][key] || messages.ja[key] || key;
+    return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), template);
+  };
 
   const setText = (element, text, isError = false) => {
     if (!element) {
@@ -88,24 +195,24 @@
     }
     const isError = operation.status === "error";
     if (operation.object_path) {
-      setArchiveProcessingStatus(operation.object_path, operation.message || "処理しています。", operation.progress, isError);
+      setArchiveProcessingStatus(operation.object_path, operation.message || t("busy"), operation.progress, isError);
       return;
     }
-    setText(archiveStatus, operation.message || "処理しています。", isError);
+    setText(archiveStatus, operation.message || t("busy"), isError);
   };
 
   const requestJson = async (url, options = {}) => {
     const response = await fetch(url, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || "処理に失敗しました。");
+      throw new Error(payload.detail || t("failed"));
     }
     return payload;
   };
 
   const readProgressStream = async (response, objectPath, fallbackMessage) => {
     if (!response.body) {
-      throw new Error("処理の進捗を読み込めませんでした。");
+      throw new Error(t("progressReadFailed"));
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -122,11 +229,11 @@
         }
         const event = JSON.parse(line);
         if (event.status === "error") {
-          throw new Error(event.message || "処理に失敗しました。");
+          throw new Error(event.message || t("failed"));
         }
         if (event.status === "ok") {
           completedPayload = event;
-          setArchiveProcessingStatus(objectPath, "完了しました。", 100);
+          setArchiveProcessingStatus(objectPath, t("done"), 100);
           continue;
         }
         setArchiveProcessingStatus(objectPath, event.message || fallbackMessage, event.progress);
@@ -136,14 +243,14 @@
       }
     }
     if (!completedPayload) {
-      throw new Error("処理の完了を確認できませんでした。");
+      throw new Error(t("completionUnknown"));
     }
     return completedPayload;
   };
 
   const readStatusProgressStream = async (response, fallbackMessage) => {
     if (!response.body) {
-      throw new Error("処理の進捗を読み込めませんでした。");
+      throw new Error(t("progressReadFailed"));
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -160,11 +267,11 @@
         }
         const event = JSON.parse(line);
         if (event.status === "error") {
-          throw new Error(event.message || "処理に失敗しました。");
+          throw new Error(event.message || t("failed"));
         }
         if (event.status === "ok") {
           completedPayload = event;
-          setText(archiveStatus, "完了しました。");
+          setText(archiveStatus, t("done"));
           continue;
         }
         setText(archiveStatus, event.message || fallbackMessage);
@@ -174,7 +281,7 @@
       }
     }
     if (!completedPayload) {
-      throw new Error("処理の完了を確認できませんでした。");
+      throw new Error(t("completionUnknown"));
     }
     return completedPayload;
   };
@@ -259,8 +366,8 @@
     link.href = href;
     link.target = "_blank";
     link.rel = "noopener";
-    link.title = "履歴ZIPをダウンロード";
-    link.setAttribute("aria-label", "履歴ZIPをダウンロード");
+    link.title = t("downloadZip");
+    link.setAttribute("aria-label", t("downloadZip"));
     link.append(downloadIcon());
     return link;
   };
@@ -282,7 +389,7 @@
     note.type = "button";
     note.className = "archive-note button secondary small";
     note.classList.toggle("is-empty", !archive.note);
-    note.textContent = archive.note || "メモなし";
+    note.textContent = archive.note || t("noNote");
     note.addEventListener("click", () => {
       const editor = document.createElement("div");
       editor.className = "archive-note-edit";
@@ -292,9 +399,9 @@
       input.value = archive.note || "";
       const spinner = document.createElement("span");
       spinner.className = "inline-spinner";
-      spinner.setAttribute("aria-label", "保存中");
+      spinner.setAttribute("aria-label", t("saving"));
       spinner.hidden = true;
-      const save = createButton("保存", "button primary small", async () => {
+      const save = createButton(t("save"), "button primary small", async () => {
         try {
           save.disabled = true;
           cancel.disabled = true;
@@ -307,7 +414,7 @@
             body: JSON.stringify({ note: input.value }),
           });
           archive.note = payload.note;
-          showToast("メモを保存しました。");
+          showToast(t("noteSaved"));
           renderArchives();
         } catch (error) {
           showToast(error.message);
@@ -319,7 +426,7 @@
           input.focus();
         }
       });
-      const cancel = createButton("キャンセル", "button secondary small", () => renderArchives());
+      const cancel = createButton(t("cancel"), "button secondary small", () => renderArchives());
       editor.append(input, save, cancel, spinner);
       input.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -347,14 +454,14 @@
     if (!displayArchives.length) {
       const empty = document.createElement("p");
       empty.className = "muted";
-      empty.textContent = "履歴はありません。";
+      empty.textContent = t("noArchives");
       archivesList.append(empty);
       return;
     }
 
     displayArchives.forEach((archive) => {
       const rowStatus = archive.is_processing
-        ? { message: archive.processing_status || "処理しています...", progress: archive.processing_progress, isError: archive.is_error }
+        ? { message: archive.processing_status || t("busy"), progress: archive.processing_progress, isError: archive.is_error }
         : archiveProcessingStatuses.get(archive.object_path);
       const isRowProcessing = Boolean(rowStatus);
       const row = document.createElement("div");
@@ -369,10 +476,10 @@
       checkbox.checked = selected.has(archive.object_path);
       checkbox.disabled = isRowProcessing || archive.is_published || isBusy;
       checkbox.title = isRowProcessing
-        ? "処理中の履歴は選択できません"
+        ? t("cannotSelectProcessing")
         : archive.is_published
-          ? "公開中の履歴は削除できません"
-          : "削除対象にする";
+          ? t("cannotDeletePublished")
+          : t("selectForDelete");
       checkbox.addEventListener("change", () => {
         if (checkbox.checked) {
           selected.add(archive.object_path);
@@ -393,16 +500,16 @@
       name.append(strong);
       if (archive.is_published) {
         if (site.publicUrl) {
-          name.append(createBadgeLink(site.publicUrl, "公開中", "badge", "本番サイトを開く"));
+          name.append(createBadgeLink(site.publicUrl, t("published"), "badge", t("openProduction")));
         } else {
           const badge = document.createElement("span");
           badge.className = "badge";
-          badge.textContent = "公開中";
+          badge.textContent = t("published");
           name.append(badge);
         }
       }
       if (archive.object_path === preparedObjectPath) {
-        name.append(createBadgeLink(api("/staging/"), "確認中", "badge staging", "確認サイトを開く"));
+        name.append(createBadgeLink(api("/staging/"), t("staging"), "badge staging", t("openStaging")));
       }
 
       const detail = document.createElement("div");
@@ -435,14 +542,14 @@
       if (isRowProcessing) {
         const status = document.createElement("span");
         status.className = "archive-action-status";
-        status.textContent = rowStatus.isError ? "失敗" : "処理中";
+        status.textContent = rowStatus.isError ? t("failedLabel") : t("processingLabel");
         actions.append(status);
       } else {
         actions.append(
-          createIconButton("確認サイトを用意する", inspectIcon(), () => prepareArchive(archive.object_path), isBusy),
+          createIconButton(t("prepareStaging"), inspectIcon(), () => prepareArchive(archive.object_path), isBusy),
           createDownloadLink(api(`/api/archives/${archiveApiPath(archive.object_path)}/download`)),
           createButton(
-            "公開する",
+            t("publish"),
             "button primary small",
             () => publishArchive(archive.object_path),
             isBusy,
@@ -518,14 +625,14 @@
       clearArchiveProcessingStatuses();
     }
     if (!quiet) {
-      setText(archiveStatus, "履歴を読み込んでいます...");
+      setText(archiveStatus, t("loadingArchives"));
     }
     try {
       const payload = await requestJson(api("/api/archives"));
       archives = payload.archives || [];
       preparedObjectPath = payload.prepared_object_path || "";
       updateProdEmptyBadge(Boolean(payload.is_prod_empty));
-      setText(archiveStatus, `履歴 ${archives.length}/${payload.archive_limit} 件`);
+      setText(archiveStatus, t("archivesCount", { count: archives.length, limit: payload.archive_limit }));
       renderArchives();
       applyOperation(payload.operation);
     } catch (error) {
@@ -540,12 +647,12 @@
       return;
     }
     if (!file.name.toLowerCase().endsWith(".zip")) {
-      setText(uploadStatus, "ZIPファイルを選択してください。", true);
+      setText(uploadStatus, t("chooseZip"), true);
       return;
     }
     setBusy(true);
     setText(uploadStatus, "");
-    const processingObjectPath = addProcessingArchive(file, "署名付きURLを取得しています...", 5);
+    const processingObjectPath = addProcessingArchive(file, t("signingUpload"), 5);
     try {
       const signPayload = await requestJson(api("/api/sign-upload"), {
         method: "POST",
@@ -556,16 +663,16 @@
           size_bytes: file.size,
         }),
       });
-      updateProcessingArchive(processingObjectPath, "ZIPをアップロードしています...", 35);
+      updateProcessingArchive(processingObjectPath, t("uploadingZip"), 35);
       const uploadResponse = await fetch(signPayload.upload_url, {
         method: "PUT",
         headers: { "Content-Type": file.type || "application/zip" },
         body: file,
       });
       if (!uploadResponse.ok) {
-        throw new Error("ZIPのアップロードに失敗しました。");
+        throw new Error(t("uploadFailed"));
       }
-      updateProcessingArchive(processingObjectPath, "履歴に追加しています...", 75);
+      updateProcessingArchive(processingObjectPath, t("addingArchive"), 75);
       const deployPayload = await requestJson(api("/api/deploy"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -575,7 +682,7 @@
           original_filename: file.name,
         }),
       });
-      updateProcessingArchive(processingObjectPath, `履歴に追加しました。${deployPayload.file_count}件`, 100);
+      updateProcessingArchive(processingObjectPath, t("archiveAdded", { count: deployPayload.file_count }), 100);
       removeProcessingArchive(processingObjectPath);
       await loadArchives();
     } catch (error) {
@@ -588,7 +695,7 @@
 
   const prepareArchive = async (objectPath) => {
     setBusy(true);
-    setArchiveProcessingStatus(objectPath, "確認サイトの準備を開始しています。", 0);
+    setArchiveProcessingStatus(objectPath, t("prepareStarting"), 0);
     try {
       const response = await fetch(api("/api/prepare-staging"), {
         method: "POST",
@@ -597,11 +704,11 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || "確認サイトの準備に失敗しました。");
+        throw new Error(payload.detail || t("prepareFailed"));
       }
-      await readProgressStream(response, objectPath, "確認サイトを用意しています。");
+      await readProgressStream(response, objectPath, t("preparingStaging"));
       clearArchiveProcessingStatus(objectPath);
-      showToast("確認サイトを用意しました。");
+      showToast(t("preparedStaging"));
       await loadArchives();
     } catch (error) {
       setArchiveProcessingStatus(objectPath, error.message, null, true);
@@ -618,24 +725,24 @@
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "確認サイトの準備に失敗しました。");
+      throw new Error(payload.detail || t("prepareFailed"));
     }
-    await readProgressStream(response, objectPath, "公開前に確認サイトを用意しています。");
+    await readProgressStream(response, objectPath, t("preparingBeforePublish"));
     preparedObjectPath = objectPath;
   };
 
   const publishArchive = async (objectPath) => {
-    if (!window.confirm(`${site.siteName} にこの履歴を公開します。よろしいですか？`)) {
+    if (!window.confirm(t("confirmPublish", { siteName: site.siteName }))) {
       return;
     }
     setBusy(true);
-    setArchiveProcessingStatus(objectPath, "公開を開始しています。", 0);
+    setArchiveProcessingStatus(objectPath, t("publishStarting"), 0);
     try {
       if (objectPath !== preparedObjectPath) {
-        setArchiveProcessingStatus(objectPath, "公開前に確認サイトを用意しています。", 0);
+        setArchiveProcessingStatus(objectPath, t("preparingBeforePublish"), 0);
         await prepareArchiveForPublish(objectPath);
       }
-      setArchiveProcessingStatus(objectPath, "公開を開始しています。", 0);
+      setArchiveProcessingStatus(objectPath, t("publishStarting"), 0);
       const response = await fetch(api("/api/publish"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -643,11 +750,11 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || "公開に失敗しました。");
+        throw new Error(payload.detail || t("publishFailed"));
       }
-      const payload = await readProgressStream(response, objectPath, "公開しています。");
+      const payload = await readProgressStream(response, objectPath, t("publishing"));
       clearArchiveProcessingStatus(objectPath);
-      showToast(`公開しました。送信${payload.copied_count}件 / 削除${payload.deleted_count}件`);
+      showToast(t("publishedToast", { copied: payload.copied_count, deleted: payload.deleted_count }));
       await loadArchives();
     } catch (error) {
       setArchiveProcessingStatus(objectPath, error.message, null, true);
@@ -657,12 +764,12 @@
   };
 
   const publishEmpty = async () => {
-    if (!window.confirm(`${site.siteName} の本番を空にします。履歴から復旧できます。よろしいですか？`)) {
+    if (!window.confirm(t("confirmEmpty", { siteName: site.siteName }))) {
       return;
     }
     setBusy(true);
     clearArchiveProcessingStatuses();
-    setText(archiveStatus, "本番を空にしています...");
+    setText(archiveStatus, t("emptyingProduction"));
     try {
       const response = await fetch(api("/api/publish-empty"), {
         method: "POST",
@@ -671,10 +778,10 @@
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail || "本番を空にできませんでした。");
+        throw new Error(payload.detail || t("emptyFailed"));
       }
-      await readStatusProgressStream(response, "本番を空にしています。");
-      showToast("本番を空にしました。");
+      await readStatusProgressStream(response, t("emptyingProduction"));
+      showToast(t("emptiedProduction"));
       setText(archiveStatus, "");
       await loadArchives();
     } catch (error) {
@@ -689,11 +796,11 @@
     if (!objectPaths.length) {
       return;
     }
-    if (!window.confirm(`${objectPaths.length}件の履歴を削除します。よろしいですか？`)) {
+    if (!window.confirm(t("confirmDelete", { count: objectPaths.length }))) {
       return;
     }
     setBusy(true);
-    setText(archiveStatus, "履歴を削除しています...");
+    setText(archiveStatus, t("deletingArchives"));
     try {
       await requestJson(api("/api/archives/delete"), {
         method: "POST",
@@ -701,7 +808,7 @@
         body: JSON.stringify({ object_paths: objectPaths }),
       });
       selected = new Set();
-      showToast("履歴を削除しました。");
+      showToast(t("deletedArchives"));
       await loadArchives();
     } catch (error) {
       setText(archiveStatus, error.message, true);
