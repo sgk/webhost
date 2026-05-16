@@ -93,6 +93,13 @@ class ZipSummary:
     total_size: int
 
 
+@dataclass(frozen=True)
+class CurrentPublicState:
+    entries: dict[str, ZipEntry]
+    object_names: set[str]
+    verified: bool
+
+
 ProgressCallback = Callable[[dict], None]
 CancelCallback = Callable[[], bool]
 
@@ -150,7 +157,7 @@ def _cancel_operation(site_id: str) -> dict | None:
         if not operation or operation.get("status") != "running":
             return None
         operation["cancel_requested"] = True
-        operation["message"] = "停止しています。"
+        operation["message"] = "停止します。"
         operation["updated_at"] = datetime.utcnow()
         return dict(operation)
 
@@ -404,6 +411,16 @@ def _save_published_marker(bucket: storage.Bucket, site_id: str, object_path: st
     )
 
 
+def _clear_published_marker(bucket: storage.Bucket, site: Site) -> None:
+    marker = _published_marker_blob(bucket, site.site_id)
+    try:
+        if marker.exists():
+            marker.delete()
+    except Exception as exc:
+        logger.warning("公開履歴マーカーの削除に失敗しました: %s", exc)
+    _save_site_publish_state(site, "", None)
+
+
 def _save_site_publish_state(site: Site, object_path: str, zip_created_at: datetime | None) -> None:
     db = get_client()
     data = {
@@ -562,19 +579,32 @@ def _verify_bucket_matches_manifest(
             progress({"stage": "verify", "checked_count": checked_count, "file_count": total_count})
 
 
-def _load_current_published_manifest(history_bucket: storage.Bucket, public_bucket: storage.Bucket, site: Site) -> dict[str, ZipEntry]:
+def _public_object_names(bucket: storage.Bucket) -> set[str]:
+    return {blob.name for blob in bucket.list_blobs() if not blob.name.endswith("/")}
+
+
+def _load_current_public_state(history_bucket: storage.Bucket, public_bucket: storage.Bucket, site: Site) -> CurrentPublicState:
     published_object_path = _load_published_object_path(history_bucket, site.site_id)
     if _is_empty_published_object_path(published_object_path):
-        return _empty_index_manifest()
+        entries = _empty_index_manifest()
+        return CurrentPublicState(entries=entries, object_names=set(entries), verified=True)
     if not published_object_path:
-        if any(public_bucket.list_blobs(max_results=1)):
-            raise HTTPException(status_code=409, detail="現公開ZIPが記録されていません。本番を空にしてから公開してください。")
-        return {}
-    _validate_history_object_path(site.site_id, published_object_path)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+    try:
+        _validate_history_object_path(site.site_id, published_object_path)
+    except HTTPException:
+        logger.warning("公開履歴マーカーが不正なため、本番内容を未確認として扱います: %s", published_object_path)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
     current_blob = history_bucket.blob(published_object_path)
     if not current_blob.exists():
-        raise HTTPException(status_code=409, detail="現公開ZIPが見つかりません。本番を空にしてから公開してください。")
-    return _read_public_zip_manifest(current_blob, site)
+        logger.warning("現公開ZIPが見つからないため、本番内容を未確認として扱います: %s", published_object_path)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+    try:
+        entries = _read_public_zip_manifest(current_blob, site)
+    except Exception as exc:
+        logger.warning("現公開ZIPの読み込みに失敗したため、本番内容を未確認として扱います: %s", exc)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+    return CurrentPublicState(entries=entries, object_names=set(entries), verified=True)
 
 
 def _delete_bucket_object_names(
@@ -596,7 +626,7 @@ def _delete_bucket_object_names(
 def _deploy_zip_to_bucket(
     source_blob: storage.Blob,
     target_bucket: storage.Bucket,
-    current_entries: dict[str, ZipEntry],
+    current_state: CurrentPublicState,
     site: Site,
     progress: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
@@ -607,17 +637,23 @@ def _deploy_zip_to_bucket(
             new_entries = _public_zip_manifest(zf, site)
             if progress:
                 progress({"stage": "validated", "file_count": len(new_entries)})
-            _verify_bucket_matches_manifest(target_bucket, current_entries, progress=progress, cancel_requested=cancel_requested)
+            if current_state.verified:
+                _verify_bucket_matches_manifest(
+                    target_bucket,
+                    current_state.entries,
+                    progress=progress,
+                    cancel_requested=cancel_requested,
+                )
             changed_infos = []
             for info in _zip_file_infos(zf):
                 _raise_if_cancelled(cancel_requested)
                 if not _is_public_object_path_supported(info.filename):
                     continue
-                current_entry = current_entries.get(info.filename)
+                current_entry = current_state.entries.get(info.filename)
                 if current_entry and _same_zip_content(current_entry, new_entries[info.filename]) and not _should_refresh_public_object(info.filename, site):
                     continue
                 changed_infos.append(info)
-            removed_names = set(current_entries) - set(new_entries)
+            removed_names = current_state.object_names - set(new_entries)
             if progress:
                 progress(
                     {
@@ -654,14 +690,16 @@ def _deploy_empty_index_to_bucket(
     cancel_requested: CancelCallback | None = None,
 ) -> dict:
     deleted_count = 0
-    for blob in target_bucket.list_blobs():
+    blobs = list(target_bucket.list_blobs())
+    total_count = len(blobs)
+    for blob in blobs:
         _raise_if_cancelled(cancel_requested)
         blob.delete()
         deleted_count += 1
         if progress:
-            progress({"stage": "delete", "deleted_count": deleted_count})
+            progress({"stage": "delete", "deleted_count": deleted_count, "total_count": total_count})
     if progress:
-        progress({"stage": "index", "deleted_count": deleted_count})
+        progress({"stage": "index", "deleted_count": deleted_count, "total_count": total_count})
     _raise_if_cancelled(cancel_requested)
     index_blob = target_bucket.blob("index.html")
     index_blob.cache_control = "no-cache, max-age=0"
@@ -855,9 +893,9 @@ async def prepare_staging(request: Request, site_id: str, payload: DeployRequest
             finally:
                 progress_queue.put(None)
 
+        operation.write("running", "確認サイトの準備を開始しています。", 0, force=True)
         thread = threading.Thread(target=run_prepare, daemon=True)
         thread.start()
-        operation.write("running", "確認サイトの準備を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "確認サイトの準備を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -926,11 +964,12 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
         def run_publish() -> None:
             try:
                 _raise_if_cancelled(operation.cancel_requested)
-                current_entries = _load_current_published_manifest(history_bucket, public_bucket, site)
+                current_state = _load_current_public_state(history_bucket, public_bucket, site)
+                _clear_published_marker(history_bucket, site)
                 result = _deploy_zip_to_bucket(
                     source_blob,
                     public_bucket,
-                    current_entries,
+                    current_state,
                     site,
                     progress=enqueue_progress,
                     cancel_requested=operation.cancel_requested,
@@ -960,9 +999,9 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
                 _close_operation_streams(site.site_id)
                 progress_queue.put(None)
 
+        operation.write("running", "公開を開始しています。", 0, force=True)
         thread = threading.Thread(target=run_publish, daemon=True)
         thread.start()
-        operation.write("running", "公開を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "公開を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -997,16 +1036,19 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
 
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "delete":
-                message = f"公開ファイルを削除しています。{event['deleted_count']}件"
+                total_count = event["total_count"] or 1
+                deleted_count = event["deleted_count"]
+                message = f"公開ファイルを削除しています。{deleted_count}/{event['total_count']}件"
+                progress_value = min(round((deleted_count / total_count) * 80), 80)
                 publish_progress_event(
                     {
                         "status": "progress",
                         "stage": "delete",
                         "message": message,
-                        "progress": None,
+                        "progress": progress_value,
                     }
                 )
-                operation.write("running", message, None)
+                operation.write("running", message, progress_value)
             elif event["stage"] == "index":
                 message = "空のindex.htmlを設置しています。"
                 publish_progress_event(
@@ -1021,6 +1063,7 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
 
         def run_publish_empty() -> None:
             try:
+                _clear_published_marker(history_bucket, site)
                 result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress, cancel_requested=operation.cancel_requested)
                 _raise_if_cancelled(operation.cancel_requested)
                 operation.write("running", "公開履歴を記録しています。", 98, force=True)
@@ -1042,9 +1085,9 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
                 _close_operation_streams(site.site_id)
                 progress_queue.put(None)
 
+        operation.write("running", "本番を空にする処理を開始しています。", 0, force=True)
         thread = threading.Thread(target=run_publish_empty, daemon=True)
         thread.start()
-        operation.write("running", "本番を空にする処理を開始しています。", 0, force=True)
         yield emit({"status": "progress", "stage": "start", "message": "本番を空にする処理を開始しています。", "progress": 0})
         while True:
             event = progress_queue.get()
@@ -1102,7 +1145,7 @@ async def cancel_operation(request: Request, site_id: str):
         {
             "status": "progress",
             "stage": "cancel",
-            "message": "停止しています。",
+            "message": "停止します。",
             "progress": operation.get("progress"),
         },
     )

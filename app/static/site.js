@@ -76,7 +76,7 @@
       deletingArchives: "履歴を削除しています...",
       deletedArchives: "履歴を削除しました。",
       stop: "ストップ",
-      stopping: "停止しています。",
+      stopping: "停止します。",
     },
     en: {
       busy: "Processing.",
@@ -184,6 +184,7 @@
       "空のindex.htmlを設置しています。": "Installing empty index.html.",
       "処理を中止しました。": "Operation stopped.",
       "停止しています。": "Stopping.",
+      "停止します。": "Stopping.",
       "実行中の処理はありません。": "No operation is running.",
     };
     if (exact[message]) {
@@ -198,6 +199,7 @@
       [/^差分を確認しました。送信(\d+)件 \/ 削除(\d+)件 \/ 変更なし(\d+)件$/, "Diff checked. Upload $1 / delete $2 / unchanged $3"],
       [/^公開先へアップロードしています。(\d+)\/(\d+)件$/, "Uploading to production. $1/$2 files"],
       [/^不要な公開ファイルを削除しています。(\d+)件$/, "Deleting obsolete production files. $1 files"],
+      [/^公開ファイルを削除しています。(\d+)\/(\d+)件$/, "Deleting production files. $1/$2 files"],
       [/^公開ファイルを削除しています。(\d+)件$/, "Deleting production files. $1 files"],
       [/^現公開内容のサイズが一致しません: (.+)$/, "Current production size does not match: $1"],
       [/^現公開内容のCRC32が一致しません: (.+)$/, "Current production CRC32 does not match: $1"],
@@ -271,18 +273,39 @@
   const canStreamKind = (kind) => kind === "publish" || kind === "publish-empty";
 
   const cancelOperation = async () => {
-    if (archiveStatusStop) {
-      archiveStatusStop.disabled = true;
-      archiveStatusStop.textContent = t("stopping");
+    const stoppingMessage = t("stopping");
+    document.querySelectorAll("[data-operation-stop]").forEach((button) => {
+      button.disabled = true;
+      const label = button.querySelector("span");
+      if (label) {
+        label.textContent = stoppingMessage;
+      } else {
+        button.textContent = stoppingMessage;
+      }
+    });
+    for (const [objectPath, status] of archiveProcessingStatuses) {
+      if (canCancelKind(status.kind) && !status.cancelRequested) {
+        setArchiveProcessingStatus(objectPath, stoppingMessage, status.progress, status.isError, status.kind, true);
+        break;
+      }
+    }
+    if (archiveStatusProgress && !archiveStatusProgress.hidden) {
+      setStatusProgress(stoppingMessage, null, false, false);
     }
     try {
-      await requestJson(api("/api/operation/cancel"), { method: "POST" });
+      const payload = await requestJson(api("/api/operation/cancel"), { method: "POST" });
+      applyOperation(payload.operation);
     } catch (error) {
       showToast(error.message);
-      if (archiveStatusStop) {
-        archiveStatusStop.disabled = false;
-        archiveStatusStop.textContent = t("stop");
-      }
+      document.querySelectorAll("[data-operation-stop]").forEach((button) => {
+        button.disabled = false;
+        const label = button.querySelector("span");
+        if (label) {
+          label.textContent = t("stop");
+        } else {
+          button.textContent = t("stop");
+        }
+      });
     }
   };
 
@@ -302,12 +325,25 @@
     if (archiveStatusStop) {
       archiveStatusStop.hidden = !message || !cancellable;
       archiveStatusStop.disabled = false;
-      archiveStatusStop.textContent = t("stop");
+      archiveStatusStop.dataset.operationStop = "true";
+      const label = archiveStatusStop.querySelector("span");
+      if (label) {
+        label.textContent = t("stop");
+      }
     }
   };
 
   const clearStatusProgress = () => {
     setStatusProgress("");
+  };
+
+  const hideStatusProgress = () => {
+    if (archiveStatusProgress) {
+      archiveStatusProgress.hidden = true;
+    }
+    if (archiveStatusStop) {
+      archiveStatusStop.hidden = true;
+    }
   };
 
   const publishedArchiveObjectPath = () => {
@@ -343,6 +379,12 @@
     updateOperationUpdates(operation);
     if (!operation) {
       lastAppliedOperationKey = "";
+      return;
+    }
+    if (operation.status !== "running") {
+      lastAppliedOperationKey = "";
+      hideStatusProgress();
+      clearArchiveProcessingStatuses();
       return;
     }
     const operationKey = [
@@ -432,7 +474,7 @@
     const target = operationProgressTarget(operation);
     if (event.status === "error") {
       updateOperationProgress(target, serverMessage(event.message) || t("failed"), event.progress, true);
-      await loadArchives({ clearStatuses: false });
+      await loadArchives();
       return true;
     }
     if (event.status === "cancelled") {
@@ -682,6 +724,12 @@
 
   const publishIcon = () => svgIcon('<path d="M12 21V9"></path><path d="m7 14 5-5 5 5"></path><path d="M5 5h14"></path>');
 
+  const stopIcon = () => {
+    const icon = svgIcon('<rect x="7" y="7" width="10" height="10" rx="1"></rect>');
+    icon.classList.add("stop-icon");
+    return icon;
+  };
+
   const createDownloadLink = (href) => {
     const link = document.createElement("a");
     link.className = "icon-tool-button";
@@ -854,6 +902,9 @@
         }
         bar.append(fill);
         progress.append(bar);
+        if (canCancelKind(rowStatus.kind) && !rowStatus.cancelRequested) {
+          progress.append(createButton(t("stop"), "button danger small", cancelOperation, false, stopIcon()));
+        }
         meta.append(progress);
       } else {
         renderNote(archive, meta);
@@ -866,9 +917,6 @@
         status.className = "archive-action-status";
         status.textContent = rowStatus.isError ? t("failedLabel") : t("processingLabel");
         actions.append(status);
-        if (canCancelKind(rowStatus.kind) && !rowStatus.cancelRequested) {
-          actions.append(createButton(t("stop"), "button danger small", cancelOperation, false));
-        }
       } else {
         actions.append(
           createIconButton(t("prepareStaging"), inspectIcon(), () => prepareArchive(archive.object_path), isBusy),
