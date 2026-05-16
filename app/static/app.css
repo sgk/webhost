@@ -52,9 +52,46 @@ a {
   gap: 12px;
 }
 
+.language-toggle {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+}
+
+.language-toggle-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.language-toggle-item + .language-toggle-item {
+  border-left: 1px solid #bfdbfe;
+}
+
+.language-toggle-item:not(.is-active):hover {
+  background: #dbeafe;
+}
+
+.language-toggle-item.is-active {
+  background: var(--primary);
+  color: #fff;
+  cursor: default;
+}
+
 .admin-email {
   color: var(--muted);
   font-size: 14px;
+}
+
+.topnav-account {
+  margin-left: 12px;
 }
 
 .page {

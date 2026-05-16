@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or "Webhost" }}</title>
-    <link rel="stylesheet" href="/static/app.css?v=20260516-archive-overlay" />
+    <link rel="stylesheet" href="/static/app.css?v=20260516-language-toggle" />
     <script>
       window.WEBHOST_LANG = {{ (lang or "ja") | tojson }};
       document.cookie = `webhost_lang=${window.WEBHOST_LANG}; path=/; max-age=31536000; SameSite=Lax`;
@@ -14,12 +14,22 @@
     <header class="topbar">
       <a class="brand" href="/sites">Webhost</a>
       <nav class="topnav">
+        <div class="language-toggle" aria-label="Language">
+          {% if lang == "ja" %}
+            <span class="language-toggle-item is-active" aria-current="true">{{ t("language.ja") }}</span>
+          {% else %}
+            <a class="language-toggle-item" href="{{ language_url('ja') }}" data-lang-link="ja">{{ t("language.ja") }}</a>
+          {% endif %}
+          {% if lang == "en" %}
+            <span class="language-toggle-item is-active" aria-current="true">{{ t("language.en") }}</span>
+          {% else %}
+            <a class="language-toggle-item" href="{{ language_url('en') }}" data-lang-link="en">{{ t("language.en") }}</a>
+          {% endif %}
+        </div>
         {% if admin_email %}
-          <span class="admin-email">{{ admin_email }}</span>
+          <span class="admin-email topnav-account">{{ admin_email }}</span>
           <a class="button secondary small" href="/logout">{{ t("logout") }}</a>
         {% endif %}
-        <a class="button secondary small" href="{{ language_url('ja') }}" data-lang-link="ja">{{ t("language.ja") }}</a>
-        <a class="button secondary small" href="{{ language_url('en') }}" data-lang-link="en">{{ t("language.en") }}</a>
       </nav>
     </header>
     <main class="page">
