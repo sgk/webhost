@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or "Webhost" }}</title>
     <link rel="stylesheet" href="/static/app.css?v=20260516-i18n" />
+    <script>
+      window.WEBHOST_LANG = {{ (lang or "ja") | tojson }};
+      document.cookie = `webhost_lang=${window.WEBHOST_LANG}; path=/; max-age=31536000; SameSite=Lax`;
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -22,9 +26,5 @@
       {% block content %}{% endblock %}
     </main>
     <div id="toast" class="toast" hidden></div>
-    <script>
-      window.WEBHOST_LANG = {{ (lang or "ja") | tojson }};
-      document.cookie = `webhost_lang=${window.WEBHOST_LANG}; path=/; max-age=31536000; SameSite=Lax`;
-    </script>
   </body>
 </html>

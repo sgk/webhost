@@ -14,6 +14,7 @@
   let selected = new Set();
   let preparedObjectPath = "";
   let isBusy = false;
+  let pageDragDepth = 0;
   let processingArchives = [];
   let archiveProcessingStatuses = new Map();
   let archivePollTimer = null;
@@ -887,6 +888,15 @@
     }
   };
 
+  const hasDraggedFiles = (event) => {
+    return Array.from(event.dataTransfer?.types || []).includes("Files");
+  };
+
+  const setPageDragover = (dragover) => {
+    pageDragDepth = dragover ? Math.max(pageDragDepth, 1) : 0;
+    dropZone.classList.toggle("is-dragover", dragover);
+  };
+
   dropZone.addEventListener("click", () => fileInput.click());
   dropZone.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -894,14 +904,37 @@
       fileInput.click();
     }
   });
-  dropZone.addEventListener("dragover", (event) => {
+  document.addEventListener("dragenter", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
     event.preventDefault();
+    pageDragDepth += 1;
     dropZone.classList.add("is-dragover");
   });
-  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("is-dragover"));
-  dropZone.addEventListener("drop", (event) => {
+  document.addEventListener("dragover", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
     event.preventDefault();
-    dropZone.classList.remove("is-dragover");
+    event.dataTransfer.dropEffect = "copy";
+    setPageDragover(true);
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    pageDragDepth = Math.max(pageDragDepth - 1, 0);
+    if (pageDragDepth === 0) {
+      dropZone.classList.remove("is-dragover");
+    }
+  });
+  document.addEventListener("drop", (event) => {
+    if (!hasDraggedFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    setPageDragover(false);
     uploadZip(event.dataTransfer.files[0]);
   });
   fileInput.addEventListener("change", () => uploadZip(fileInput.files[0]));
