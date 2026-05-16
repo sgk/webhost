@@ -224,10 +224,9 @@ export BASE_URL=https://your-production-host.example.com
 
 ## 10. サイト公開用GCSバケットを作成する
 
-公開用GCSバケットはサイトごとに作成する。
+公開用GCSバケットは共有バケットを作成し、サイトごとのprefixで分離する。
 
 ```bash
-export SITE_ID=example-site
 export PUBLIC_BUCKET=your-public-bucket
 
 gcloud storage buckets create "gs://${PUBLIC_BUCKET}" \
@@ -244,7 +243,28 @@ gcloud storage buckets add-iam-policy-binding "gs://${PUBLIC_BUCKET}" \
   --role=roles/storage.objectAdmin
 ```
 
-GCS静的ホスティングやLoad Balancer公開の構成は、公開方法に合わせて別途設定する。
+HTTPS公開では、Cloud Load Balancingのbackend bucketを共有公開バケットに対して作成する。URL mapはhostごとにpath prefix rewriteを設定し、リクエストをサイトprefix配下へ向ける。
+
+例:
+
+```text
+site-a.example.com -> gs://{PUBLIC_BUCKET}/site-a.example.com/
+site-b.example.com -> gs://{PUBLIC_BUCKET}/site-b.example.com/
+```
+
+URL mapの概念:
+
+```text
+host: site-a.example.com
+  backend bucket: shared-public-bucket
+  path prefix rewrite: /site-a.example.com/
+
+host: site-b.example.com
+  backend bucket: shared-public-bucket
+  path prefix rewrite: /site-b.example.com/
+```
+
+backend bucketはサイトごとに作らない。Cloud Load Balancingのbackend bucket数クォータを避けるため、1つまたは少数のbackend bucketで複数サイトを公開する。
 
 ## 11. Firestoreにサイト定義と管理者を登録する
 
@@ -254,6 +274,7 @@ Firestoreにサイト定義を作成する。
 sites/{site_id}
   name: string
   public_bucket: string
+  public_prefix: string
   public_url: string
   enabled: true
   archive_limit: 10
@@ -270,6 +291,17 @@ sites/{site_id}/admins/{admin_email}
 ```
 
 `site_id` は英小文字、数字、ハイフンで人間が決める。
+
+`public_bucket` は共有公開バケット名を入れる。`public_prefix` はサイトごとの公開prefixを末尾 `/` ありで入れる。
+
+例:
+
+```text
+sites/site-a
+  public_bucket: your-public-bucket
+  public_prefix: site-a.example.com/
+  public_url: https://site-a.example.com/
+```
 
 ## 12. 環境変数を設定する
 

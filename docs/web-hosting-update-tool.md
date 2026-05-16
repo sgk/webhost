@@ -14,8 +14,9 @@ GCSで公開する静的ウェブサイトを、管理者がZIPファイルで�
 - サイト定義とサイトごとの管理者はFirestoreに置く。
 - 1人の管理者が複数サイトを管理できる。
 - ZIP履歴を置くGCSバケットは1個とする。
-- 公開用GCSバケットはサイト数ぶん用意する。
-- 公開用GCSバケットの中身は、このツールが全体を管理する。
+- 公開用GCSバケットは共有バケットを使い、サイトごとのprefixで分離する。
+- Cloud Load Balancingのbackend bucketは共有公開バケットを指すものを少数作り、URL mapでhostごとにサイトprefixへpath prefix rewriteする。
+- 公開用GCSバケットのうち、サイトに割り当てたprefix配下はこのツールが全体を管理する。
 - サイトIDは人間が決めてFirestoreに登録する。
 - アプリ名、Cloud Runサービス名、GCPプロジェクトID、履歴用GCSバケット名などの具体名は未定のため、環境変数で受ける。
 
@@ -56,6 +57,7 @@ staging確認URLは管理画面配下の `/sites/{site_id}/staging/` とする�
 sites/{site_id}
   name: string
   public_bucket: string
+  public_prefix: string
   public_url: string
   enabled: bool
   archive_limit: number
@@ -96,11 +98,42 @@ gs://{history_bucket}/sites/{site_id}/archive/{timestamp}-{hash}.zip
 gs://{history_bucket}/sites/{site_id}/published.json
 ```
 
-公開用GCSバケットはサイトごとに異なる。
+公開用GCSバケットは共有バケットを使い、サイトごとのprefixで分離する。
 
 ```text
-sites/{site_id}.public_bucket -> gs://{public_bucket}/...
+sites/{site_id}.public_bucket -> gs://{public_bucket}
+sites/{site_id}.public_prefix -> {site_prefix}/
+
+gs://{public_bucket}/{site_prefix}/index.html
+gs://{public_bucket}/{site_prefix}/assets/app.css
 ```
+
+`public_prefix` は末尾 `/` ありで保存する。prefixはサイトごとの公開ルートであり、アプリはこのprefix外のオブジェクトを公開・削除しない。
+
+## Load Balancer
+
+HTTPS公開では、1つの外部Application Load Balancerに共有公開バケット用のbackend bucketを接続する。URL mapはhostごとにpath matcherまたはroute ruleを持ち、リクエストpathの先頭をサイトprefixへ書き換える。
+
+例:
+
+```text
+https://site-a.example.com/index.html -> gs://{public_bucket}/site-a.example.com/index.html
+https://site-b.example.com/about/ -> gs://{public_bucket}/site-b.example.com/about/
+```
+
+URL mapの考え方:
+
+```text
+host: site-a.example.com
+  backend bucket: shared-public-bucket
+  path prefix rewrite: /site-a.example.com/
+
+host: site-b.example.com
+  backend bucket: shared-public-bucket
+  path prefix rewrite: /site-b.example.com/
+```
+
+この方式により、サイト数ぶんのbackend bucketを作らずに複数サイトを公開できる。Cloud Load Balancingのbackend bucket数クォータを避けるため、今後はサイトごとの公開用GCSバケットではなく共有公開バケット方式を標準とする。
 
 ## ZIPアップロードと履歴
 
@@ -152,15 +185,15 @@ stagingはCloud Runインスタンス内の一時ディレクトリへ展開す�
 2. その履歴ZIPがstagingに準備済みであることを確認する。
 3. `published.json` から現在公開中の履歴ZIPを取得する。
 4. 現在公開中の履歴ZIPからmanifestを作る。
-5. 実際の公開用GCSバケットの内容とmanifestが一致するか確認する。
+5. 実際の公開用GCSバケットのサイトprefix配下の内容とmanifestが一致するか確認する。
 6. 一致しない場合は公開を停止する。
-7. 一致する場合は、新しいZIPとの差分を公開用GCSバケットへ反映する。
-8. 新しいZIPに存在しない公開用GCSオブジェクトを削除する。
+7. 一致する場合は、新しいZIPとの差分を公開用GCSバケットのサイトprefix配下へ反映する。
+8. サイトprefix配下のうち、新しいZIPに存在しない公開用GCSオブジェクトを削除する。
 9. `published.json` を新しい履歴ZIPに更新する。
 
-公開用GCSバケットはこのツールが全体を管理するため、ZIPに存在しない既存オブジェクトは削除してよい。
+サイトprefix配下はこのツールが全体を管理するため、ZIPに存在しない既存オブジェクトは削除してよい。共有公開バケット内でも、他サイトのprefix配下は触らない。
 
-手動でGCSを変更した場合は、公開前の整合性確認で検出して停止する。
+手動でGCSのサイトprefix配下を変更した場合は、公開前の整合性確認で検出して停止する。
 
 ## 本番を空にする
 
@@ -169,8 +202,8 @@ stagingはCloud Runインスタンス内の一時ディレクトリへ展開す�
 動作:
 
 1. ログインユーザーが対象サイトの管理者であることを確認する。
-2. `sites/{site_id}.public_bucket` の全オブジェクトを削除する。
-3. 空の `index.html` を置く。
+2. `sites/{site_id}.public_bucket` の `sites/{site_id}.public_prefix` 配下の全オブジェクトを削除する。
+3. サイトprefix配下に空の `index.html` を置く。
 4. 履歴バケットの `sites/{site_id}/published.json` に `__empty__` を記録する。
 
 誤って空にした場合でも、履歴から再公開して復旧できる。
