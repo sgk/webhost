@@ -33,7 +33,13 @@
   <section class="panel">
     <div class="section-title">
       <h2>{{ t("site.archive_title") }}</h2>
-      <p class="status-line" id="archive-status"></p>
+      <div class="archive-status-box">
+        <p class="status-line" id="archive-status"></p>
+        <div id="archive-status-progress" class="archive-status-progress" hidden>
+          <div class="archive-progress-bar"><span></span></div>
+          <button type="button" class="button danger small" id="archive-status-stop" hidden>{{ t("site.stop") }}</button>
+        </div>
+      </div>
     </div>
     <div class="toolbar">
       <button type="button" class="button secondary" id="reload-button">
@@ -66,5 +72,5 @@
       publicUrl: {{ site.public_url | tojson }},
     };
   </script>
-  <script src="/static/site.js?v=20260516-archive-overlay"></script>
+  <script src="/static/site.js?v=20260516-operation-cancel"></script>
 {% endblock %}

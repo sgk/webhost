@@ -42,6 +42,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "site.publish_empty": "本番を空にする",
         "site.published": "公開中",
         "site.loading_archives": "履歴を読み込んでいます...",
+        "site.stop": "ストップ",
     },
     "en": {
         "logout": "Log out",
@@ -76,6 +77,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "site.publish_empty": "Empty production",
         "site.published": "Published",
         "site.loading_archives": "Loading archives...",
+        "site.stop": "Stop",
     },
 }
 

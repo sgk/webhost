@@ -363,6 +363,21 @@ a {
   gap: 16px;
 }
 
+.archive-status-box {
+  display: grid;
+  justify-items: end;
+  min-width: min(360px, 50%);
+}
+
+.archive-status-progress {
+  display: grid;
+  grid-template-columns: minmax(140px, 280px) auto;
+  align-items: center;
+  gap: 8px;
+  width: min(380px, 100%);
+  margin-top: 4px;
+}
+
 .archive-list-shell {
   position: relative;
   min-height: 80px;

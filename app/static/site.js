@@ -8,6 +8,8 @@
   const prodEmptyBadge = document.getElementById("prod-empty-badge");
   const uploadStatus = document.getElementById("upload-status");
   const archiveStatus = document.getElementById("archive-status");
+  const archiveStatusProgress = document.getElementById("archive-status-progress");
+  const archiveStatusStop = document.getElementById("archive-status-stop");
   const archivesList = document.getElementById("archives-list");
   const archiveLoadingOverlay = document.getElementById("archive-loading-overlay");
   const toast = document.getElementById("toast");
@@ -19,6 +21,9 @@
   let processingArchives = [];
   let archiveProcessingStatuses = new Map();
   let archivePollTimer = null;
+  let operationStreamController = null;
+  let operationStreamId = "";
+  let lastAppliedOperationKey = "";
   const lang = window.WEBHOST_LANG === "en" ? "en" : "ja";
   const messages = {
     ja: {
@@ -70,6 +75,8 @@
       confirmDelete: "{count}件の履歴を削除します。よろしいですか？",
       deletingArchives: "履歴を削除しています...",
       deletedArchives: "履歴を削除しました。",
+      stop: "ストップ",
+      stopping: "停止しています。",
     },
     en: {
       busy: "Processing.",
@@ -120,6 +127,8 @@
       confirmDelete: "Delete {count} archives?",
       deletingArchives: "Deleting archives...",
       deletedArchives: "Archives deleted.",
+      stop: "Stop",
+      stopping: "Stopping.",
     },
   };
 
@@ -173,6 +182,9 @@
       "本番を空にしました。": "Production emptied.",
       "本番を空にする処理を開始しています。": "Starting production emptying.",
       "空のindex.htmlを設置しています。": "Installing empty index.html.",
+      "処理を中止しました。": "Operation stopped.",
+      "停止しています。": "Stopping.",
+      "実行中の処理はありません。": "No operation is running.",
     };
     if (exact[message]) {
       return exact[message];
@@ -254,29 +266,243 @@
     }
   };
 
-  const updatePolling = (operation) => {
+  const canCancelKind = (kind) => kind === "publish" || kind === "publish-empty";
+
+  const canStreamKind = (kind) => kind === "publish" || kind === "publish-empty";
+
+  const cancelOperation = async () => {
+    if (archiveStatusStop) {
+      archiveStatusStop.disabled = true;
+      archiveStatusStop.textContent = t("stopping");
+    }
+    try {
+      await requestJson(api("/api/operation/cancel"), { method: "POST" });
+    } catch (error) {
+      showToast(error.message);
+      if (archiveStatusStop) {
+        archiveStatusStop.disabled = false;
+        archiveStatusStop.textContent = t("stop");
+      }
+    }
+  };
+
+  const setStatusProgress = (message, progress = null, isError = false, cancellable = false) => {
+    setText(archiveStatus, message, isError);
+    if (!archiveStatusProgress) {
+      return;
+    }
+    archiveStatusProgress.hidden = !message;
+    const bar = archiveStatusProgress.querySelector(".archive-progress-bar");
+    const fill = archiveStatusProgress.querySelector("span");
+    if (!bar || !fill) {
+      return;
+    }
+    bar.classList.toggle("is-indeterminate", !Number.isFinite(progress));
+    fill.style.width = Number.isFinite(progress) ? `${progress}%` : "";
+    if (archiveStatusStop) {
+      archiveStatusStop.hidden = !message || !cancellable;
+      archiveStatusStop.disabled = false;
+      archiveStatusStop.textContent = t("stop");
+    }
+  };
+
+  const clearStatusProgress = () => {
+    setStatusProgress("");
+  };
+
+  const publishedArchiveObjectPath = () => {
+    return archives.find((archive) => archive.is_published)?.object_path || "";
+  };
+
+  const updateOperationUpdates = (operation) => {
+    if (operation && operation.status === "running" && canStreamKind(operation.kind)) {
+      if (archivePollTimer) {
+        window.clearInterval(archivePollTimer);
+        archivePollTimer = null;
+      }
+      startOperationStream(operation);
+      return;
+    }
+    if (operationStreamController && (!operation || operation.status !== "running")) {
+      operationStreamController.abort();
+      operationStreamController = null;
+      operationStreamId = "";
+    }
     if (archivePollTimer && (!operation || operation.status !== "running")) {
       window.clearInterval(archivePollTimer);
       archivePollTimer = null;
     }
     if (operation && operation.status === "running" && !archivePollTimer) {
       archivePollTimer = window.setInterval(() => {
-        loadArchives({ clearStatuses: false, quiet: true });
-      }, 1500);
+        pollOperation();
+      }, 700);
     }
   };
 
   const applyOperation = (operation) => {
-    updatePolling(operation);
+    updateOperationUpdates(operation);
     if (!operation) {
+      lastAppliedOperationKey = "";
       return;
     }
+    const operationKey = [
+      operation.operation_id,
+      operation.kind,
+      operation.object_path,
+      operation.status,
+      operation.message,
+      operation.progress,
+      operation.cancel_requested,
+    ].join("|");
+    if (operationKey === lastAppliedOperationKey) {
+      return;
+    }
+    lastAppliedOperationKey = operationKey;
     const isError = operation.status === "error";
     if (operation.object_path) {
-      setArchiveProcessingStatus(operation.object_path, serverMessage(operation.message) || t("busy"), operation.progress, isError);
+      setArchiveProcessingStatus(
+        operation.object_path,
+        serverMessage(operation.message) || t("busy"),
+        operation.progress,
+        isError,
+        operation.kind,
+        Boolean(operation.cancel_requested),
+      );
       return;
     }
-    setText(archiveStatus, serverMessage(operation.message) || t("busy"), isError);
+    const message = serverMessage(operation.message) || t("busy");
+    if (operation.kind === "publish-empty") {
+      const objectPath = publishedArchiveObjectPath();
+      if (objectPath) {
+        setArchiveProcessingStatus(objectPath, message, operation.progress, isError, operation.kind, Boolean(operation.cancel_requested));
+        return;
+      }
+      setStatusProgress(message, operation.progress, isError, operation.kind === "publish-empty" && !operation.cancel_requested);
+      return;
+    }
+    setText(archiveStatus, message, isError);
+  };
+
+  const pollOperation = async () => {
+    try {
+      const payload = await requestJson(api("/api/operation"));
+      applyOperation(payload.operation);
+      if (!payload.operation || payload.operation.status !== "running") {
+        await loadArchives({ clearStatuses: false });
+      }
+    } catch (error) {
+      setText(archiveStatus, error.message, true);
+    }
+  };
+
+  const operationProgressTarget = (operation) => {
+    if (!operation) {
+      return null;
+    }
+    if (operation.object_path) {
+      return { type: "archive", objectPath: operation.object_path, kind: operation.kind };
+    }
+    if (operation.kind === "publish-empty") {
+      const objectPath = publishedArchiveObjectPath();
+      if (objectPath) {
+        return { type: "archive", objectPath, kind: operation.kind };
+      }
+      return { type: "status", kind: operation.kind };
+    }
+    return { type: "status", kind: operation.kind };
+  };
+
+  const updateOperationProgress = (target, message, progress, isError = false, cancelRequested = false) => {
+    if (!target) {
+      setText(archiveStatus, message, isError);
+      return;
+    }
+    if (target.type === "archive") {
+      setArchiveProcessingStatus(target.objectPath, message, progress, isError, target.kind, cancelRequested);
+      return;
+    }
+    setStatusProgress(message, progress, isError, canCancelKind(target.kind) && !cancelRequested);
+  };
+
+  const handleOperationStreamEvent = async (operation, event) => {
+    if (event.status === "idle") {
+      await loadArchives();
+      return true;
+    }
+    const target = operationProgressTarget(operation);
+    if (event.status === "error") {
+      updateOperationProgress(target, serverMessage(event.message) || t("failed"), event.progress, true);
+      await loadArchives({ clearStatuses: false });
+      return true;
+    }
+    if (event.status === "cancelled") {
+      updateOperationProgress(target, serverMessage(event.message) || t("done"), event.progress, false, true);
+      await loadArchives();
+      return true;
+    }
+    if (event.status === "ok") {
+      updateOperationProgress(target, t("done"), 100);
+      await loadArchives();
+      return true;
+    }
+    updateOperationProgress(target, serverMessage(event.message) || t("busy"), event.progress);
+    return false;
+  };
+
+  const startOperationStream = async (operation) => {
+    if (!operation || operationStreamId === operation.operation_id) {
+      return;
+    }
+    if (operationStreamController) {
+      operationStreamController.abort();
+    }
+    operationStreamId = operation.operation_id;
+    operationStreamController = new AbortController();
+    const controller = operationStreamController;
+    try {
+      const response = await fetch(api("/api/operation/stream"), {
+        method: "POST",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(serverMessage(payload.detail) || t("failed"));
+      }
+      if (!response.body) {
+        throw new Error(t("progressReadFailed"));
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let shouldClose = false;
+      while (!shouldClose) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) {
+            continue;
+          }
+          shouldClose = await handleOperationStreamEvent(operation, JSON.parse(line));
+          if (shouldClose) {
+            break;
+          }
+        }
+        if (done) {
+          break;
+        }
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        setText(archiveStatus, error.message, true);
+      }
+    } finally {
+      if (operationStreamController === controller) {
+        operationStreamController = null;
+        operationStreamId = "";
+      }
+    }
   };
 
   const requestJson = async (url, options = {}) => {
@@ -309,12 +535,17 @@
         if (event.status === "error") {
           throw new Error(serverMessage(event.message) || t("failed"));
         }
-        if (event.status === "ok") {
+        if (event.status === "cancelled") {
           completedPayload = event;
-          setArchiveProcessingStatus(objectPath, t("done"), 100);
+          setArchiveProcessingStatus(objectPath, serverMessage(event.message) || t("done"), event.progress, false, "publish");
           continue;
         }
-        setArchiveProcessingStatus(objectPath, serverMessage(event.message) || fallbackMessage, event.progress);
+        if (event.status === "ok") {
+          completedPayload = event;
+          setArchiveProcessingStatus(objectPath, t("done"), 100, false, "publish");
+          continue;
+        }
+        setArchiveProcessingStatus(objectPath, serverMessage(event.message) || fallbackMessage, event.progress, false, "publish");
       }
       if (done) {
         break;
@@ -326,7 +557,7 @@
     return completedPayload;
   };
 
-  const readStatusProgressStream = async (response, fallbackMessage) => {
+  const readStatusProgressStream = async (response, fallbackMessage, onProgress) => {
     if (!response.body) {
       throw new Error(t("progressReadFailed"));
     }
@@ -347,12 +578,17 @@
         if (event.status === "error") {
           throw new Error(serverMessage(event.message) || t("failed"));
         }
-        if (event.status === "ok") {
+        if (event.status === "cancelled") {
           completedPayload = event;
-          setText(archiveStatus, t("done"));
+          onProgress(serverMessage(event.message) || t("done"), event.progress, false);
           continue;
         }
-        setText(archiveStatus, serverMessage(event.message) || fallbackMessage);
+        if (event.status === "ok") {
+          completedPayload = event;
+          onProgress(t("done"), 100, false);
+          continue;
+        }
+        onProgress(serverMessage(event.message) || fallbackMessage, event.progress, false);
       }
       if (done) {
         break;
@@ -547,7 +783,7 @@
 
     displayArchives.forEach((archive) => {
       const rowStatus = archive.is_processing
-        ? { message: archive.processing_status || t("busy"), progress: archive.processing_progress, isError: archive.is_error }
+        ? { message: archive.processing_status || t("busy"), progress: archive.processing_progress, isError: archive.is_error, kind: archive.processing_kind }
         : archiveProcessingStatuses.get(archive.object_path);
       const isRowProcessing = Boolean(rowStatus);
       const row = document.createElement("div");
@@ -630,6 +866,9 @@
         status.className = "archive-action-status";
         status.textContent = rowStatus.isError ? t("failedLabel") : t("processingLabel");
         actions.append(status);
+        if (canCancelKind(rowStatus.kind) && !rowStatus.cancelRequested) {
+          actions.append(createButton(t("stop"), "button danger small", cancelOperation, false));
+        }
       } else {
         actions.append(
           createIconButton(t("prepareStaging"), inspectIcon(), () => prepareArchive(archive.object_path), isBusy),
@@ -680,11 +919,13 @@
     renderArchives();
   };
 
-  const setArchiveProcessingStatus = (objectPath, message, progress = null, isError = false) => {
+  const setArchiveProcessingStatus = (objectPath, message, progress = null, isError = false, kind = "", cancelRequested = false) => {
     archiveProcessingStatuses.set(objectPath, {
       message,
       progress,
       isError,
+      kind,
+      cancelRequested,
     });
     renderArchives();
   };
@@ -707,11 +948,14 @@
   const loadArchives = async (options = {}) => {
     const clearStatuses = options.clearStatuses !== false;
     const quiet = Boolean(options.quiet);
-    setBusy(true);
+    if (!quiet) {
+      setBusy(true);
+    }
     if (clearStatuses) {
       clearArchiveProcessingStatuses();
     }
     if (!quiet) {
+      clearStatusProgress();
       setText(archiveStatus, t("loadingArchives"));
       setArchiveLoading(true);
     }
@@ -728,8 +972,8 @@
     } finally {
       if (!quiet) {
         setArchiveLoading(false);
+        setBusy(false);
       }
-      setBusy(false);
     }
   };
 
@@ -827,13 +1071,13 @@
       return;
     }
     setBusy(true);
-    setArchiveProcessingStatus(objectPath, t("publishStarting"), 0);
+    setArchiveProcessingStatus(objectPath, t("publishStarting"), 0, false, "publish");
     try {
       if (objectPath !== preparedObjectPath) {
-        setArchiveProcessingStatus(objectPath, t("preparingBeforePublish"), 0);
+        setArchiveProcessingStatus(objectPath, t("preparingBeforePublish"), 0, false, "publish");
         await prepareArchiveForPublish(objectPath);
       }
-      setArchiveProcessingStatus(objectPath, t("publishStarting"), 0);
+      setArchiveProcessingStatus(objectPath, t("publishStarting"), 0, false, "publish");
       const response = await fetch(api("/api/publish"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -844,6 +1088,10 @@
         throw new Error(serverMessage(payload.detail) || t("publishFailed"));
       }
       const payload = await readProgressStream(response, objectPath, t("publishing"));
+      if (payload.status === "cancelled") {
+        await loadArchives();
+        return;
+      }
       clearArchiveProcessingStatus(objectPath);
       showToast(t("publishedToast", { copied: payload.copied_count, deleted: payload.deleted_count }));
       await loadArchives();
@@ -860,7 +1108,15 @@
     }
     setBusy(true);
     clearArchiveProcessingStatuses();
-    setText(archiveStatus, t("emptyingProduction"));
+    const publishedObjectPath = publishedArchiveObjectPath();
+    const updateEmptyProgress = (message, progress, isError = false) => {
+      if (publishedObjectPath) {
+        setArchiveProcessingStatus(publishedObjectPath, message, progress, isError, "publish-empty");
+      } else {
+        setStatusProgress(message, progress, isError, true);
+      }
+    };
+    updateEmptyProgress(t("emptyingProduction"), 0);
     try {
       const response = await fetch(api("/api/publish-empty"), {
         method: "POST",
@@ -871,12 +1127,18 @@
         const payload = await response.json().catch(() => ({}));
         throw new Error(serverMessage(payload.detail) || t("emptyFailed"));
       }
-      await readStatusProgressStream(response, t("emptyingProduction"));
+      const payload = await readStatusProgressStream(response, t("emptyingProduction"), updateEmptyProgress);
+      if (payload.status === "cancelled") {
+        await loadArchives();
+        return;
+      }
       showToast(t("emptiedProduction"));
-      setText(archiveStatus, "");
+      if (!publishedObjectPath) {
+        clearStatusProgress();
+      }
       await loadArchives();
     } catch (error) {
-      setText(archiveStatus, error.message, true);
+      updateEmptyProgress(error.message, null, true);
     } finally {
       setBusy(false);
     }
@@ -961,6 +1223,9 @@
   reloadButton.addEventListener("click", loadArchives);
   deleteButton.addEventListener("click", deleteSelected);
   publishEmptyButton.addEventListener("click", publishEmpty);
+  if (archiveStatusStop) {
+    archiveStatusStop.addEventListener("click", cancelOperation);
+  }
 
   loadArchives();
 })();

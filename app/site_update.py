@@ -94,9 +94,15 @@ class ZipSummary:
 
 
 ProgressCallback = Callable[[dict], None]
+CancelCallback = Callable[[], bool]
 
 operation_lock = threading.Lock()
 operations: dict[str, dict] = {}
+operation_subscribers: dict[str, list[queue.Queue[dict | None]]] = {}
+
+
+class OperationCancelled(Exception):
+    pass
 
 
 class OperationReporter:
@@ -109,20 +115,79 @@ class OperationReporter:
 
     def write(self, status: str, message: str, progress: int | None = None, force: bool = False) -> None:
         now = time.monotonic()
-        if not force and now - self.last_write_at < 1.0:
+        if not force and now - self.last_write_at < 0.25:
             return
         self.last_write_at = now
-        data = {
-            "operation_id": self.operation_id,
-            "kind": self.kind,
-            "object_path": self.object_path,
-            "status": status,
-            "message": message,
-            "progress": progress,
-            "updated_at": datetime.utcnow(),
-        }
         with operation_lock:
+            existing = operations.get(self.site_id) or {}
+            cancel_requested = bool(existing.get("cancel_requested")) if existing.get("operation_id") == self.operation_id else False
+            data = {
+                "operation_id": self.operation_id,
+                "kind": self.kind,
+                "object_path": self.object_path,
+                "status": status,
+                "message": message,
+                "progress": progress,
+                "cancel_requested": cancel_requested,
+                "updated_at": datetime.utcnow(),
+            }
             operations[self.site_id] = data
+
+    def cancel_requested(self) -> bool:
+        with operation_lock:
+            operation = operations.get(self.site_id) or {}
+            return bool(operation.get("cancel_requested"))
+
+
+def _raise_if_cancelled(cancel_requested: CancelCallback | None) -> None:
+    if cancel_requested and cancel_requested():
+        raise OperationCancelled("処理を中止しました。")
+
+
+def _cancel_operation(site_id: str) -> dict | None:
+    with operation_lock:
+        operation = operations.get(site_id)
+        if not operation or operation.get("status") != "running":
+            return None
+        operation["cancel_requested"] = True
+        operation["message"] = "停止しています。"
+        operation["updated_at"] = datetime.utcnow()
+        return dict(operation)
+
+
+def _subscribe_operation(site_id: str) -> queue.Queue[dict | None] | None:
+    with operation_lock:
+        operation = operations.get(site_id)
+        if not operation or operation.get("status") != "running":
+            return None
+        subscriber: queue.Queue[dict | None] = queue.Queue()
+        operation_subscribers.setdefault(site_id, []).append(subscriber)
+        return subscriber
+
+
+def _unsubscribe_operation(site_id: str, subscriber: queue.Queue[dict | None]) -> None:
+    with operation_lock:
+        subscribers = operation_subscribers.get(site_id)
+        if not subscribers:
+            return
+        if subscriber in subscribers:
+            subscribers.remove(subscriber)
+        if not subscribers:
+            operation_subscribers.pop(site_id, None)
+
+
+def _publish_operation_event(site_id: str, event: dict) -> None:
+    with operation_lock:
+        subscribers = list(operation_subscribers.get(site_id) or [])
+    for subscriber in subscribers:
+        subscriber.put(dict(event))
+
+
+def _close_operation_streams(site_id: str) -> None:
+    with operation_lock:
+        subscribers = operation_subscribers.pop(site_id, [])
+    for subscriber in subscribers:
+        subscriber.put(None)
 
 
 def _current_operation(site_id: str) -> dict | None:
@@ -469,7 +534,12 @@ def _clear_prepared_if_matches(site_id: str, object_paths: Iterable[str]) -> Non
         marker.unlink()
 
 
-def _verify_bucket_matches_manifest(bucket: storage.Bucket, expected_entries: dict[str, ZipEntry], progress: ProgressCallback | None = None) -> None:
+def _verify_bucket_matches_manifest(
+    bucket: storage.Bucket,
+    expected_entries: dict[str, ZipEntry],
+    progress: ProgressCallback | None = None,
+    cancel_requested: CancelCallback | None = None,
+) -> None:
     blobs = {blob.name: blob for blob in bucket.list_blobs()}
     expected_names = set(expected_entries)
     actual_names = set(blobs)
@@ -478,6 +548,7 @@ def _verify_bucket_matches_manifest(bucket: storage.Bucket, expected_entries: di
     checked_count = 0
     total_count = len(expected_entries)
     for name, expected in expected_entries.items():
+        _raise_if_cancelled(cancel_requested)
         blob = blobs[name]
         if (blob.size or 0) != expected.size:
             raise HTTPException(status_code=409, detail=f"現公開内容のサイズが一致しません: {name}")
@@ -506,9 +577,15 @@ def _load_current_published_manifest(history_bucket: storage.Bucket, public_buck
     return _read_public_zip_manifest(current_blob, site)
 
 
-def _delete_bucket_object_names(bucket: storage.Bucket, object_names: set[str], progress: ProgressCallback | None = None) -> int:
+def _delete_bucket_object_names(
+    bucket: storage.Bucket,
+    object_names: set[str],
+    progress: ProgressCallback | None = None,
+    cancel_requested: CancelCallback | None = None,
+) -> int:
     deleted_count = 0
     for object_name in sorted(object_names):
+        _raise_if_cancelled(cancel_requested)
         bucket.blob(object_name).delete()
         deleted_count += 1
         if progress:
@@ -522,15 +599,18 @@ def _deploy_zip_to_bucket(
     current_entries: dict[str, ZipEntry],
     site: Site,
     progress: ProgressCallback | None = None,
+    cancel_requested: CancelCallback | None = None,
 ) -> dict:
     with source_blob.open("rb") as stream:
         with zipfile.ZipFile(stream) as zf:
+            _raise_if_cancelled(cancel_requested)
             new_entries = _public_zip_manifest(zf, site)
             if progress:
                 progress({"stage": "validated", "file_count": len(new_entries)})
-            _verify_bucket_matches_manifest(target_bucket, current_entries, progress=progress)
+            _verify_bucket_matches_manifest(target_bucket, current_entries, progress=progress, cancel_requested=cancel_requested)
             changed_infos = []
             for info in _zip_file_infos(zf):
+                _raise_if_cancelled(cancel_requested)
                 if not _is_public_object_path_supported(info.filename):
                     continue
                 current_entry = current_entries.get(info.filename)
@@ -550,6 +630,7 @@ def _deploy_zip_to_bucket(
                 )
             copied_count = 0
             for info in changed_infos:
+                _raise_if_cancelled(cancel_requested)
                 entry = new_entries[info.filename]
                 with zf.open(info) as file_handle:
                     target_blob = target_bucket.blob(info.filename)
@@ -559,7 +640,7 @@ def _deploy_zip_to_bucket(
                     copied_count += 1
                     if progress:
                         progress({"stage": "upload", "copied_count": copied_count, "file_count": len(changed_infos)})
-            deleted_count = _delete_bucket_object_names(target_bucket, removed_names, progress=progress)
+            deleted_count = _delete_bucket_object_names(target_bucket, removed_names, progress=progress, cancel_requested=cancel_requested)
     return {
         "deleted_count": deleted_count,
         "copied_count": copied_count,
@@ -567,15 +648,21 @@ def _deploy_zip_to_bucket(
     }
 
 
-def _deploy_empty_index_to_bucket(target_bucket: storage.Bucket, progress: ProgressCallback | None = None) -> dict:
+def _deploy_empty_index_to_bucket(
+    target_bucket: storage.Bucket,
+    progress: ProgressCallback | None = None,
+    cancel_requested: CancelCallback | None = None,
+) -> dict:
     deleted_count = 0
     for blob in target_bucket.list_blobs():
+        _raise_if_cancelled(cancel_requested)
         blob.delete()
         deleted_count += 1
         if progress:
             progress({"stage": "delete", "deleted_count": deleted_count})
     if progress:
         progress({"stage": "index", "deleted_count": deleted_count})
+    _raise_if_cancelled(cancel_requested)
     index_blob = target_bucket.blob("index.html")
     index_blob.cache_control = "no-cache, max-age=0"
     _set_zip_entry_metadata(index_blob, _empty_index_manifest()["index.html"])
@@ -804,40 +891,53 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
         progress_queue: queue.Queue[dict | None] = queue.Queue()
         operation = OperationReporter(site.site_id, "publish", payload.object_path)
 
+        def publish_progress_event(event: dict) -> None:
+            progress_queue.put(event)
+            _publish_operation_event(site.site_id, event)
+
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "validated":
                 message = f"ZIPを確認しました。{event['file_count']}件を公開します。"
-                progress_queue.put({"status": "progress", "stage": "validated", "message": message, "progress": 10})
+                publish_progress_event({"status": "progress", "stage": "validated", "message": message, "progress": 10})
                 operation.write("running", message, 10)
             elif event["stage"] == "verify":
                 file_count = event["file_count"] or 1
                 checked_count = event["checked_count"]
                 message = f"現公開内容を確認しています。{checked_count}/{file_count}件"
                 progress_value = min(10 + round((checked_count / file_count) * 10), 20)
-                progress_queue.put({"status": "progress", "stage": "verify", "message": message, "progress": progress_value})
+                publish_progress_event({"status": "progress", "stage": "verify", "message": message, "progress": progress_value})
                 operation.write("running", message, progress_value)
             elif event["stage"] == "diff":
                 message = f"差分を確認しました。送信{event['changed_count']}件 / 削除{event['deleted_count']}件 / 変更なし{event['skipped_count']}件"
-                progress_queue.put({"status": "progress", "stage": "diff", "message": message, "progress": 20})
+                publish_progress_event({"status": "progress", "stage": "diff", "message": message, "progress": 20})
                 operation.write("running", message, 20, force=True)
             elif event["stage"] == "upload":
                 file_count = event["file_count"] or 1
                 copied_count = event["copied_count"]
                 message = f"公開先へアップロードしています。{copied_count}/{file_count}件"
                 progress_value = min(20 + round((copied_count / file_count) * 70), 90)
-                progress_queue.put({"status": "progress", "stage": "upload", "message": message, "progress": progress_value})
+                publish_progress_event({"status": "progress", "stage": "upload", "message": message, "progress": progress_value})
                 operation.write("running", message, progress_value)
             elif event["stage"] == "delete":
                 message = f"不要な公開ファイルを削除しています。{event['deleted_count']}件"
-                progress_queue.put({"status": "progress", "stage": "delete", "message": message, "progress": 95})
+                publish_progress_event({"status": "progress", "stage": "delete", "message": message, "progress": 95})
                 operation.write("running", message, 95)
 
         def run_publish() -> None:
             try:
+                _raise_if_cancelled(operation.cancel_requested)
                 current_entries = _load_current_published_manifest(history_bucket, public_bucket, site)
-                result = _deploy_zip_to_bucket(source_blob, public_bucket, current_entries, site, progress=enqueue_progress)
+                result = _deploy_zip_to_bucket(
+                    source_blob,
+                    public_bucket,
+                    current_entries,
+                    site,
+                    progress=enqueue_progress,
+                    cancel_requested=operation.cancel_requested,
+                )
+                _raise_if_cancelled(operation.cancel_requested)
                 operation.write("running", "公開履歴を記録しています。", 98, force=True)
-                progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
+                publish_progress_event({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
                 _save_published_marker(history_bucket, site.site_id, payload.object_path)
                 source_blob.reload()
                 metadata = dict(source_blob.metadata or {})
@@ -846,13 +946,18 @@ async def publish_site(request: Request, site_id: str, payload: PublishRequest):
                 source_blob.patch()
                 _save_site_publish_state(site, payload.object_path, source_blob.time_created)
                 operation.write("done", "公開しました。", 100, force=True)
-                progress_queue.put({"status": "ok", "target": "prod", "object_path": payload.object_path, "progress": 100, **result})
+                publish_progress_event({"status": "ok", "target": "prod", "object_path": payload.object_path, "progress": 100, **result})
+            except OperationCancelled as exc:
+                message = str(exc)
+                operation.write("cancelled", message, None, force=True)
+                publish_progress_event({"status": "cancelled", "message": message})
             except Exception as exc:
                 logger.exception("公開処理に失敗しました。")
                 message = exc.detail if isinstance(exc, HTTPException) else "公開に失敗しました。"
                 operation.write("error", message, None, force=True)
-                progress_queue.put({"status": "error", "message": message})
+                publish_progress_event({"status": "error", "message": message})
             finally:
+                _close_operation_streams(site.site_id)
                 progress_queue.put(None)
 
         thread = threading.Thread(target=run_publish, daemon=True)
@@ -886,10 +991,14 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
         progress_queue: queue.Queue[dict | None] = queue.Queue()
         operation = OperationReporter(site.site_id, "publish-empty")
 
+        def publish_progress_event(event: dict) -> None:
+            progress_queue.put(event)
+            _publish_operation_event(site.site_id, event)
+
         def enqueue_progress(event: dict) -> None:
             if event["stage"] == "delete":
                 message = f"公開ファイルを削除しています。{event['deleted_count']}件"
-                progress_queue.put(
+                publish_progress_event(
                     {
                         "status": "progress",
                         "stage": "delete",
@@ -900,7 +1009,7 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
                 operation.write("running", message, None)
             elif event["stage"] == "index":
                 message = "空のindex.htmlを設置しています。"
-                progress_queue.put(
+                publish_progress_event(
                     {
                         "status": "progress",
                         "stage": "index",
@@ -912,19 +1021,25 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
 
         def run_publish_empty() -> None:
             try:
-                result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress)
+                result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress, cancel_requested=operation.cancel_requested)
+                _raise_if_cancelled(operation.cancel_requested)
                 operation.write("running", "公開履歴を記録しています。", 98, force=True)
-                progress_queue.put({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
+                publish_progress_event({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
                 _save_published_marker(history_bucket, site.site_id, EMPTY_PUBLISHED_OBJECT_PATH)
                 _save_site_publish_state(site, EMPTY_PUBLISHED_OBJECT_PATH, None)
                 operation.write("done", "本番を空にしました。", 100, force=True)
-                progress_queue.put({"status": "ok", "target": "prod", "object_path": "", "progress": 100, **result})
+                publish_progress_event({"status": "ok", "target": "prod", "object_path": "", "progress": 100, **result})
+            except OperationCancelled as exc:
+                message = str(exc)
+                operation.write("cancelled", message, None, force=True)
+                publish_progress_event({"status": "cancelled", "message": message})
             except Exception as exc:
                 logger.exception("本番を空にする処理に失敗しました。")
                 message = exc.detail if isinstance(exc, HTTPException) else "本番を空にできませんでした。"
                 operation.write("error", message, None, force=True)
-                progress_queue.put({"status": "error", "message": message})
+                publish_progress_event({"status": "error", "message": message})
             finally:
+                _close_operation_streams(site.site_id)
                 progress_queue.put(None)
 
         thread = threading.Thread(target=run_publish_empty, daemon=True)
@@ -938,6 +1053,60 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
             yield emit(event)
 
     return StreamingResponse(stream_empty_progress(), media_type="application/x-ndjson")
+
+
+@router.get("/sites/{site_id}/api/operation", response_class=JSONResponse)
+async def get_operation(request: Request, site_id: str):
+    site = _require_site_admin(request, site_id)
+    if isinstance(site, RedirectResponse):
+        return _json_error("unauthorized", 401)
+    return JSONResponse({"operation": _current_operation(site.site_id)})
+
+
+@router.post("/sites/{site_id}/api/operation/stream")
+async def stream_operation(request: Request, site_id: str):
+    site = _require_site_admin(request, site_id)
+    if isinstance(site, RedirectResponse):
+        return _json_error("unauthorized", 401)
+
+    def stream_progress():
+        def emit(event: dict) -> str:
+            return json.dumps(event, ensure_ascii=False) + "\n"
+
+        subscriber = _subscribe_operation(site.site_id)
+        if subscriber is None:
+            yield emit({"status": "idle"})
+            return
+        try:
+            while True:
+                event = subscriber.get()
+                if event is None:
+                    break
+                yield emit(event)
+        finally:
+            _unsubscribe_operation(site.site_id, subscriber)
+
+    return StreamingResponse(stream_progress(), media_type="application/x-ndjson")
+
+
+@router.post("/sites/{site_id}/api/operation/cancel", response_class=JSONResponse)
+async def cancel_operation(request: Request, site_id: str):
+    site = _require_site_admin(request, site_id)
+    if isinstance(site, RedirectResponse):
+        return _json_error("unauthorized", 401)
+    operation = _cancel_operation(site.site_id)
+    if not operation:
+        return _json_error("実行中の処理はありません。", 409)
+    _publish_operation_event(
+        site.site_id,
+        {
+            "status": "progress",
+            "stage": "cancel",
+            "message": "停止しています。",
+            "progress": operation.get("progress"),
+        },
+    )
+    return JSONResponse({"operation": _current_operation(site.site_id)})
 
 
 @router.get("/sites/{site_id}/api/archives", response_class=JSONResponse)
