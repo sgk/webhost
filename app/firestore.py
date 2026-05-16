@@ -71,13 +71,20 @@ def _datetime_or_none(value: object) -> datetime | None:
     return None
 
 
+def _normalize_public_url(value: object) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    return f"{url.rstrip('/')}/"
+
+
 def site_from_doc(doc: firestore.DocumentSnapshot) -> Site:
     data = doc.to_dict() or {}
     return Site(
         site_id=doc.id,
         name=str(data.get("name") or doc.id),
         public_bucket=str(data.get("public_bucket") or ""),
-        public_url=str(data.get("public_url") or "").rstrip("/"),
+        public_url=_normalize_public_url(data.get("public_url")),
         published_object_path=str(data.get("published_object_path") or ""),
         published_zip_created_at=_datetime_or_none(data.get("published_zip_created_at")),
         html_charset=str(data.get("html_charset") or "").strip(),
