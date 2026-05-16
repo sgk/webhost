@@ -24,6 +24,7 @@
   let operationStreamController = null;
   let operationStreamId = "";
   let lastAppliedOperationKey = "";
+  let cancelRequestInFlight = false;
   const lang = window.WEBHOST_LANG === "en" ? "en" : "ja";
   const messages = {
     ja: {
@@ -273,6 +274,10 @@
   const canStreamKind = (kind) => kind === "publish" || kind === "publish-empty";
 
   const cancelOperation = async () => {
+    if (cancelRequestInFlight) {
+      return;
+    }
+    cancelRequestInFlight = true;
     const stoppingMessage = t("stopping");
     document.querySelectorAll("[data-operation-stop]").forEach((button) => {
       button.disabled = true;
@@ -296,6 +301,7 @@
       const payload = await requestJson(api("/api/operation/cancel"), { method: "POST" });
       applyOperation(payload.operation);
     } catch (error) {
+      cancelRequestInFlight = false;
       showToast(error.message);
       document.querySelectorAll("[data-operation-stop]").forEach((button) => {
         button.disabled = false;
@@ -379,10 +385,12 @@
     updateOperationUpdates(operation);
     if (!operation) {
       lastAppliedOperationKey = "";
+      cancelRequestInFlight = false;
       return;
     }
     if (operation.status !== "running") {
       lastAppliedOperationKey = "";
+      cancelRequestInFlight = false;
       hideStatusProgress();
       clearArchiveProcessingStatuses();
       return;
@@ -903,7 +911,9 @@
         bar.append(fill);
         progress.append(bar);
         if (canCancelKind(rowStatus.kind) && !rowStatus.cancelRequested) {
-          progress.append(createButton(t("stop"), "button danger small", cancelOperation, false, stopIcon()));
+          const stopButton = createButton(t("stop"), "button danger small", cancelOperation, false, stopIcon());
+          stopButton.dataset.operationStop = "true";
+          progress.append(stopButton);
         }
         meta.append(progress);
       } else {
