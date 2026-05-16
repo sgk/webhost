@@ -133,7 +133,11 @@ def _current_operation(site_id: str) -> dict | None:
         if operation["status"] != "running" and (datetime.utcnow() - operation["updated_at"]).total_seconds() > 60:
             operations.pop(site_id, None)
             return None
-        return dict(operation)
+        current = dict(operation)
+        updated_at = current.get("updated_at")
+        if isinstance(updated_at, datetime):
+            current["updated_at"] = updated_at.isoformat() + "Z"
+        return current
 
 
 def _json_error(message: str, status_code: int = 400) -> JSONResponse:
