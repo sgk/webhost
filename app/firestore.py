@@ -17,6 +17,7 @@ class Site:
     site_id: str
     name: str
     public_bucket: str
+    public_prefix: str
     public_url: str
     published_object_path: str
     published_zip_created_at: datetime | None
@@ -78,12 +79,20 @@ def _normalize_public_url(value: object) -> str:
     return f"{url.rstrip('/')}/"
 
 
+def _normalize_public_prefix(value: object) -> str:
+    prefix = str(value or "").strip().strip("/")
+    if not prefix:
+        return ""
+    return f"{prefix}/"
+
+
 def site_from_doc(doc: firestore.DocumentSnapshot) -> Site:
     data = doc.to_dict() or {}
     return Site(
         site_id=doc.id,
         name=str(data.get("name") or doc.id),
         public_bucket=str(data.get("public_bucket") or ""),
+        public_prefix=_normalize_public_prefix(data.get("public_prefix")),
         public_url=_normalize_public_url(data.get("public_url")),
         published_object_path=str(data.get("published_object_path") or ""),
         published_zip_created_at=_datetime_or_none(data.get("published_zip_created_at")),

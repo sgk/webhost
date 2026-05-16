@@ -159,6 +159,7 @@
       "現公開ZIPが見つかりません。本番を空にしてから公開してください。": "The current published ZIP was not found. Empty production before publishing.",
       "サイトが見つかりません。": "Site not found.",
       "公開用GCSバケットが未設定です。": "The public GCS bucket is not configured.",
+      "公開用GCS prefixが未設定です。": "The public GCS prefix is not configured.",
       "content_type が不正です。": "content_type is invalid.",
       "size_bytes が不正です。": "size_bytes is invalid.",
       "ZIPのサイズが上限を超えています。": "The ZIP size exceeds the limit.",

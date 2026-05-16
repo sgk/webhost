@@ -31,6 +31,7 @@ make run
 sites/{site_id}
   name
   public_bucket
+  public_prefix
   public_url
   enabled
   archive_limit
@@ -58,7 +59,14 @@ gs://{SITE_HISTORY_BUCKET}/sites/{site_id}/archive/{timestamp}-{hash}.zip
 gs://{SITE_HISTORY_BUCKET}/sites/{site_id}/published.json
 ```
 
-公開用バケットはサイトごとに用意し、Firestoreの `public_bucket` に保存する。
+公開用バケットは共有バケットを使い、サイトごとのprefixで分離する。
+
+```text
+gs://{PUBLIC_BUCKET}/{public_prefix}/index.html
+gs://{PUBLIC_BUCKET}/{public_prefix}/assets/app.css
+```
+
+共有公開バケット名をFirestoreの `public_bucket` に保存し、サイトごとの公開prefixを `public_prefix` に保存する。HTTPS公開では、Cloud Load BalancingのURL mapでhostごとにpath prefix rewriteを設定し、共有公開バケット内のサイトprefixへ向ける。
 
 ## Cloud Run
 

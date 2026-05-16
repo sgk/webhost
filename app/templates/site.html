@@ -4,7 +4,7 @@
     <div>
       <a class="back-link" href="/sites">{{ t("site.back") }}</a>
       <h1>{{ site.name }}</h1>
-      <p class="muted">gs://{{ site.public_bucket }}</p>
+      <p class="muted">gs://{{ site.public_bucket }}/{{ site.public_prefix }}</p>
     </div>
     <div class="heading-actions">
       {% if site.public_url %}
@@ -80,5 +80,5 @@
       publicUrl: {{ site.public_url | tojson }},
     };
   </script>
-  <script src="/static/site.js?v=20260516-stop-disable"></script>
+  <script src="/static/site.js?v=20260516-public-prefix"></script>
 {% endblock %}

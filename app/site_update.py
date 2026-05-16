@@ -553,11 +553,16 @@ def _clear_prepared_if_matches(site_id: str, object_paths: Iterable[str]) -> Non
 
 def _verify_bucket_matches_manifest(
     bucket: storage.Bucket,
+    site: Site,
     expected_entries: dict[str, ZipEntry],
     progress: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
 ) -> None:
-    blobs = {blob.name: blob for blob in bucket.list_blobs()}
+    blobs = {
+        logical_name: blob
+        for blob in bucket.list_blobs(prefix=site.public_prefix)
+        if (logical_name := _public_logical_name(site, blob.name))
+    }
     expected_names = set(expected_entries)
     actual_names = set(blobs)
     if actual_names != expected_names:
@@ -579,8 +584,25 @@ def _verify_bucket_matches_manifest(
             progress({"stage": "verify", "checked_count": checked_count, "file_count": total_count})
 
 
-def _public_object_names(bucket: storage.Bucket) -> set[str]:
-    return {blob.name for blob in bucket.list_blobs() if not blob.name.endswith("/")}
+def _public_blob_name(site: Site, object_name: str) -> str:
+    return f"{site.public_prefix}{object_name}"
+
+
+def _public_logical_name(site: Site, blob_name: str) -> str:
+    if not blob_name.startswith(site.public_prefix):
+        return ""
+    name = blob_name[len(site.public_prefix):]
+    if not name or name.endswith("/"):
+        return ""
+    return name
+
+
+def _public_object_names(bucket: storage.Bucket, site: Site) -> set[str]:
+    return {
+        logical_name
+        for blob in bucket.list_blobs(prefix=site.public_prefix)
+        if (logical_name := _public_logical_name(site, blob.name))
+    }
 
 
 def _load_current_public_state(history_bucket: storage.Bucket, public_bucket: storage.Bucket, site: Site) -> CurrentPublicState:
@@ -589,26 +611,27 @@ def _load_current_public_state(history_bucket: storage.Bucket, public_bucket: st
         entries = _empty_index_manifest()
         return CurrentPublicState(entries=entries, object_names=set(entries), verified=True)
     if not published_object_path:
-        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket, site), verified=False)
     try:
         _validate_history_object_path(site.site_id, published_object_path)
     except HTTPException:
         logger.warning("公開履歴マーカーが不正なため、本番内容を未確認として扱います: %s", published_object_path)
-        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket, site), verified=False)
     current_blob = history_bucket.blob(published_object_path)
     if not current_blob.exists():
         logger.warning("現公開ZIPが見つからないため、本番内容を未確認として扱います: %s", published_object_path)
-        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket, site), verified=False)
     try:
         entries = _read_public_zip_manifest(current_blob, site)
     except Exception as exc:
         logger.warning("現公開ZIPの読み込みに失敗したため、本番内容を未確認として扱います: %s", exc)
-        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket), verified=False)
+        return CurrentPublicState(entries={}, object_names=_public_object_names(public_bucket, site), verified=False)
     return CurrentPublicState(entries=entries, object_names=set(entries), verified=True)
 
 
 def _delete_bucket_object_names(
     bucket: storage.Bucket,
+    site: Site,
     object_names: set[str],
     progress: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
@@ -616,7 +639,7 @@ def _delete_bucket_object_names(
     deleted_count = 0
     for object_name in sorted(object_names):
         _raise_if_cancelled(cancel_requested)
-        bucket.blob(object_name).delete()
+        bucket.blob(_public_blob_name(site, object_name)).delete()
         deleted_count += 1
         if progress:
             progress({"stage": "delete", "deleted_count": deleted_count})
@@ -640,6 +663,7 @@ def _deploy_zip_to_bucket(
             if current_state.verified:
                 _verify_bucket_matches_manifest(
                     target_bucket,
+                    site,
                     current_state.entries,
                     progress=progress,
                     cancel_requested=cancel_requested,
@@ -669,14 +693,14 @@ def _deploy_zip_to_bucket(
                 _raise_if_cancelled(cancel_requested)
                 entry = new_entries[info.filename]
                 with zf.open(info) as file_handle:
-                    target_blob = target_bucket.blob(info.filename)
+                    target_blob = target_bucket.blob(_public_blob_name(site, info.filename))
                     target_blob.cache_control = "no-cache, max-age=0"
                     _set_zip_entry_metadata(target_blob, entry)
                     target_blob.upload_from_file(file_handle, content_type=_content_type_for_public_object(info.filename, site))
                     copied_count += 1
                     if progress:
                         progress({"stage": "upload", "copied_count": copied_count, "file_count": len(changed_infos)})
-            deleted_count = _delete_bucket_object_names(target_bucket, removed_names, progress=progress, cancel_requested=cancel_requested)
+            deleted_count = _delete_bucket_object_names(target_bucket, site, removed_names, progress=progress, cancel_requested=cancel_requested)
     return {
         "deleted_count": deleted_count,
         "copied_count": copied_count,
@@ -686,11 +710,12 @@ def _deploy_zip_to_bucket(
 
 def _deploy_empty_index_to_bucket(
     target_bucket: storage.Bucket,
+    site: Site,
     progress: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
 ) -> dict:
     deleted_count = 0
-    blobs = list(target_bucket.list_blobs())
+    blobs = list(target_bucket.list_blobs(prefix=site.public_prefix))
     total_count = len(blobs)
     for blob in blobs:
         _raise_if_cancelled(cancel_requested)
@@ -701,7 +726,7 @@ def _deploy_empty_index_to_bucket(
     if progress:
         progress({"stage": "index", "deleted_count": deleted_count, "total_count": total_count})
     _raise_if_cancelled(cancel_requested)
-    index_blob = target_bucket.blob("index.html")
+    index_blob = target_bucket.blob(_public_blob_name(site, "index.html"))
     index_blob.cache_control = "no-cache, max-age=0"
     _set_zip_entry_metadata(index_blob, _empty_index_manifest()["index.html"])
     index_blob.upload_from_string("", content_type="text/html; charset=utf-8")
@@ -718,6 +743,8 @@ def _require_site_admin(request: Request, site_id: str) -> Site | RedirectRespon
         raise HTTPException(status_code=404, detail="サイトが見つかりません。")
     if not site.public_bucket:
         raise HTTPException(status_code=500, detail="公開用GCSバケットが未設定です。")
+    if not site.public_prefix:
+        raise HTTPException(status_code=500, detail="公開用GCS prefixが未設定です。")
     return site
 
 
@@ -1064,7 +1091,7 @@ async def publish_empty(request: Request, site_id: str, payload: PublishEmptyReq
         def run_publish_empty() -> None:
             try:
                 _clear_published_marker(history_bucket, site)
-                result = _deploy_empty_index_to_bucket(public_bucket, progress=enqueue_progress, cancel_requested=operation.cancel_requested)
+                result = _deploy_empty_index_to_bucket(public_bucket, site, progress=enqueue_progress, cancel_requested=operation.cancel_requested)
                 _raise_if_cancelled(operation.cancel_requested)
                 operation.write("running", "公開履歴を記録しています。", 98, force=True)
                 publish_progress_event({"status": "progress", "stage": "marker", "message": "公開履歴を記録しています。", "progress": 98})
