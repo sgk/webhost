@@ -383,11 +383,17 @@
     return date.toLocaleString(lang === "en" ? "en-US" : "ja-JP");
   };
 
-  const createButton = (label, className, onClick, disabled = isBusy) => {
+  const createButton = (label, className, onClick, disabled = isBusy, icon = null) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = className;
-    button.textContent = label;
+    if (icon) {
+      const text = document.createElement("span");
+      text.textContent = label;
+      button.append(icon, text);
+    } else {
+      button.textContent = label;
+    }
     button.disabled = disabled;
     button.addEventListener("click", onClick);
     return button;
@@ -430,6 +436,8 @@
   const downloadIcon = () => svgIcon('<path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path>');
 
   const inspectIcon = () => svgIcon('<circle cx="11" cy="11" r="6"></circle><path d="m16 16 5 5"></path>');
+
+  const publishIcon = () => svgIcon('<path d="M12 21V9"></path><path d="m7 14 5-5 5 5"></path><path d="M5 5h14"></path>');
 
   const createDownloadLink = (href) => {
     const link = document.createElement("a");
@@ -624,6 +632,7 @@
             "button primary small",
             () => publishArchive(archive.object_path),
             isBusy,
+            publishIcon(),
           ),
         );
       }
