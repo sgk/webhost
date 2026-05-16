@@ -50,7 +50,13 @@
       </button>
       <span class="badge" id="prod-empty-badge" hidden>{{ t("site.published") }}</span>
     </div>
-    <div id="archives-list" class="archive-list"></div>
+    <div class="archive-list-shell">
+      <div id="archives-list" class="archive-list"></div>
+      <div id="archive-loading-overlay" class="archive-loading-overlay" hidden>
+        <span class="archive-loading-spinner" aria-hidden="true"></span>
+        <span>{{ t("site.loading_archives") }}</span>
+      </div>
+    </div>
   </section>
 
   <script>
@@ -60,5 +66,5 @@
       publicUrl: {{ site.public_url | tojson }},
     };
   </script>
-  <script src="/static/site.js?v=20260516-icons"></script>
+  <script src="/static/site.js?v=20260516-archive-overlay"></script>
 {% endblock %}

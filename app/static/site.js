@@ -9,6 +9,7 @@
   const uploadStatus = document.getElementById("upload-status");
   const archiveStatus = document.getElementById("archive-status");
   const archivesList = document.getElementById("archives-list");
+  const archiveLoadingOverlay = document.getElementById("archive-loading-overlay");
   const toast = document.getElementById("toast");
   let archives = [];
   let selected = new Set();
@@ -244,6 +245,12 @@
   const updateProdEmptyBadge = (isProdEmpty) => {
     if (prodEmptyBadge) {
       prodEmptyBadge.hidden = !isProdEmpty;
+    }
+  };
+
+  const setArchiveLoading = (loading) => {
+    if (archiveLoadingOverlay) {
+      archiveLoadingOverlay.hidden = !loading;
     }
   };
 
@@ -706,6 +713,7 @@
     }
     if (!quiet) {
       setText(archiveStatus, t("loadingArchives"));
+      setArchiveLoading(true);
     }
     try {
       const payload = await requestJson(api("/api/archives"));
@@ -718,6 +726,9 @@
     } catch (error) {
       setText(archiveStatus, error.message, true);
     } finally {
+      if (!quiet) {
+        setArchiveLoading(false);
+      }
       setBusy(false);
     }
   };

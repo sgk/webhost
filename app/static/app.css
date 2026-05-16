@@ -326,10 +326,39 @@ a {
   gap: 16px;
 }
 
+.archive-list-shell {
+  position: relative;
+  min-height: 80px;
+}
+
 .archive-list {
   display: grid;
   gap: 10px;
   margin-top: 16px;
+}
+
+.archive-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 100%;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 78%);
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.archive-loading-spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid #bfdbfe;
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
 .archive-row {
