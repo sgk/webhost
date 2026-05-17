@@ -26,7 +26,7 @@ deploy:
 		--service-account "$$SERVICE_ACCOUNT" \
 		--allow-unauthenticated \
 		--max-instances 1 \
-		--set-build-env-vars GOOGLE_PYTHON_VERSION=3.12 \
+		--set-build-env-vars GOOGLE_PYTHON_VERSION=3.13 \
 		--set-env-vars "$$ENV_VARS"
 
 run:
