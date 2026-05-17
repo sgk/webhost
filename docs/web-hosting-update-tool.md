@@ -59,6 +59,9 @@ sites/{site_id}
   public_bucket: string
   public_prefix: string
   public_url: string
+  html_charset: string
+  published_object_path: string
+  published_zip_created_at: timestamp
   enabled: bool
   archive_limit: number
   upload_max_total_mb: number
@@ -110,6 +113,10 @@ gs://{public_bucket}/{site_prefix}/assets/app.css
 
 `public_prefix` は末尾 `/` ありで保存する。prefixはサイトごとの公開ルートであり、アプリはこのprefix外のオブジェクトを公開・削除しない。
 
+共有公開バケットには website main page suffix として `index.html` を設定する。ロードバランサーのprefix rewrite後のURLがディレクトリ指定になった場合、GCSが対象prefix配下の `index.html` を返すため、URL mapでrootだけを特別扱いする必要はない。
+
+`html_charset` は任意項目。設定した場合、staging配信と公開用GCSオブジェクトのHTML Content-Typeに `text/html; charset={html_charset}` を付ける。ZIP内のファイル内容や文字コードは変換しない。
+
 ## Load Balancer
 
 HTTPS公開では、1つの外部Application Load Balancerに共有公開バケット用のbackend bucketを接続する。URL mapはhostごとにpath matcherまたはroute ruleを持ち、リクエストpathの先頭をサイトprefixへ書き換える。
@@ -118,7 +125,7 @@ HTTPS公開では、1つの外部Application Load Balancerに共有公開バケ�
 
 ```text
 https://site-a.example.com/index.html -> gs://{public_bucket}/site-a.example.com/index.html
-https://site-b.example.com/about/ -> gs://{public_bucket}/site-b.example.com/about/
+https://site-b.example.com/about/ -> gs://{public_bucket}/site-b.example.com/about/index.html
 ```
 
 URL mapの考え方:
@@ -150,6 +157,17 @@ ZIPについてアプリが確認する条件は最小限にする。
 - ZIPファイルとして開けること。
 - ZIP直下に `index.html` があること。
 
+ZIPの作り方:
+
+```text
+site.zip
+  index.html
+  assets/app.css
+  pages/about.html
+```
+
+`index.html` はZIP直下に置く。ディレクトリごとZIP化して `site/index.html` になる形は不可とする。
+
 拡張子、HTML/CSS/JSの内容、外部リンク、スクリプトなどは検査しない。サイト管理者の責任範囲とする。
 
 ただし、staging配信時はリクエストされたパスがstagingルート外へ出ないように拒否する。staging展開時も、実ファイルの書き込み先がstagingルート外になるものは書き込まない、またはエラーにする。
@@ -175,25 +193,27 @@ stagingはCloud Runインスタンス内の一時ディレクトリへ展開す�
 
 `{site_id}.prepared` には、現在stagingに準備されている履歴ZIPのオブジェクトパスを記録する。
 
-本番公開前には、公開対象の履歴ZIPがstagingに準備済みであることを確認する。
+staging準備は、管理画面で確認サイトを開くための処理である。本番公開はstaging準備済みでなくても実行できる。
 
 ## 本番公開
 
 公開処理は、先行実装の差分公開方式を参考にする。
 
 1. 公開対象の履歴ZIPを選ぶ。
-2. その履歴ZIPがstagingに準備済みであることを確認する。
-3. `published.json` から現在公開中の履歴ZIPを取得する。
+2. `published.json` から現在公開中の履歴ZIPを取得する。
+3. 公開開始時点で公開中マーカーをいったん消す。
 4. 現在公開中の履歴ZIPからmanifestを作る。
 5. 実際の公開用GCSバケットのサイトprefix配下の内容とmanifestが一致するか確認する。
 6. 一致しない場合は公開を停止する。
 7. 一致する場合は、新しいZIPとの差分を公開用GCSバケットのサイトprefix配下へ反映する。
 8. サイトprefix配下のうち、新しいZIPに存在しない公開用GCSオブジェクトを削除する。
-9. `published.json` を新しい履歴ZIPに更新する。
+9. `published.json` を新しい履歴ZIPに更新し、Firestoreの公開状態を更新する。
 
 サイトprefix配下はこのツールが全体を管理するため、ZIPに存在しない既存オブジェクトは削除してよい。共有公開バケット内でも、他サイトのprefix配下は触らない。
 
 手動でGCSのサイトprefix配下を変更した場合は、公開前の整合性確認で検出して停止する。
+
+公開処理はNDJSONのストリーミング応答で進捗を返す。別ブラウザやリロード後の画面は、実行中operationのストリームへ再接続して途中から進捗を受け取る。公開処理と本番を空にする処理は停止要求を受け付ける。
 
 ## 本番を空にする
 
@@ -202,9 +222,10 @@ stagingはCloud Runインスタンス内の一時ディレクトリへ展開す�
 動作:
 
 1. ログインユーザーが対象サイトの管理者であることを確認する。
-2. `sites/{site_id}.public_bucket` の `sites/{site_id}.public_prefix` 配下の全オブジェクトを削除する。
-3. サイトprefix配下に空の `index.html` を置く。
-4. 履歴バケットの `sites/{site_id}/published.json` に `__empty__` を記録する。
+2. 公開開始時点で公開中マーカーをいったん消す。
+3. `sites/{site_id}.public_bucket` の `sites/{site_id}.public_prefix` 配下の全オブジェクトを削除する。
+4. サイトprefix配下に空の `index.html` を置く。
+5. 履歴バケットの `sites/{site_id}/published.json` に `__empty__` を記録し、Firestoreの公開状態を更新する。
 
 誤って空にした場合でも、履歴から再公開して復旧できる。
 

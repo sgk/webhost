@@ -9,7 +9,9 @@ export REGION=asia-northeast1
 export SERVICE_ACCOUNT=webhost-app@your-project-id.iam.gserviceaccount.com
 
 # Base URL (used for OAuth redirect)
-export BASE_URL=https://example.com
+# For .env use http://localhost:7000.
+# For .env-deploy use the Cloud Run custom domain, such as https://webhost.example.com.
+export BASE_URL=http://localhost:7000
 
 # Google OAuth (admin)
 export GOOGLE_OAUTH_CLIENT_ID=your-client-id

@@ -33,6 +33,7 @@ sites/{site_id}
   public_bucket
   public_prefix
   public_url
+  html_charset
   enabled
   archive_limit
   upload_max_total_mb
@@ -48,6 +49,10 @@ sites/{site_id}/admins/{email}
 ```
 
 `site_id` は英小文字、数字、ハイフンで人間が決める。
+
+`html_charset` は任意項目。設定した場合、stagingと公開時のHTMLレスポンスに `text/html; charset={html_charset}` を付ける。既存コンテンツの文字コードを変換する項目ではない。
+
+`public_url` と `public_prefix` は末尾 `/` ありで登録する。
 
 ## GCS
 
@@ -67,6 +72,18 @@ gs://{PUBLIC_BUCKET}/{public_prefix}/assets/app.css
 ```
 
 共有公開バケット名をFirestoreの `public_bucket` に保存し、サイトごとの公開prefixを `public_prefix` に保存する。HTTPS公開では、Cloud Load BalancingのURL mapでhostごとにpath prefix rewriteを設定し、共有公開バケット内のサイトprefixへ向ける。
+
+共有公開バケットには website main page suffix として `index.html` を設定する。これにより、ロードバランサー経由でディレクトリURLにアクセスした場合も、GCSがprefix配下の `index.html` を返す。
+
+ZIPファイルは、ZIP直下に `index.html` がある形で作る。
+
+```text
+site.zip
+  index.html
+  assets/app.css
+```
+
+ディレクトリそのものをZIPに入れて `site/index.html` になる形は不可。
 
 ## Cloud Run
 
