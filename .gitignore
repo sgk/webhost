@@ -19,8 +19,5 @@ __pycache__/
 # Local Chrome profile for browser checks
 .chrome/
 
-# Local site source repositories
-webhost-sites/
-
 # Editor swap files
 *.swp
