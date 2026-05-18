@@ -5,6 +5,18 @@ import argparse
 from pathlib import Path
 import re
 
+DEPLOY_ONLY_KEYS = {
+    "GCP_ACCOUNT",
+    "GCP_CONFIG_NAME",
+    "REGION",
+    "SERVICE_ACCOUNT",
+    "SERVICE_NAME",
+}
+
+SECRET_ENV_KEYS = {
+    "GOOGLE_OAUTH_CLIENT_SECRET": "webhost-app-google-oauth-client-secret",
+}
+
 
 def parse_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -32,8 +44,19 @@ def parse_env(path: Path) -> dict[str, str]:
 def format_env_vars(values: dict[str, str]) -> str:
     items = []
     for key, value in values.items():
+        if key in DEPLOY_ONLY_KEYS or key in SECRET_ENV_KEYS:
+            continue
         escaped = value.replace(",", "\\,")
         items.append(f"{key}={escaped}")
+    return ",".join(items)
+
+
+def format_secrets(values: dict[str, str]) -> str:
+    items = []
+    for key, secret_name in SECRET_ENV_KEYS.items():
+        if key not in values:
+            continue
+        items.append(f"{key}={secret_name}:latest")
     return ",".join(items)
 
 
@@ -42,6 +65,7 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env-deploy")
     parser.add_argument("--get")
     parser.add_argument("--env-vars", action="store_true")
+    parser.add_argument("--secrets", action="store_true")
     args = parser.parse_args()
 
     values = parse_env(Path(args.env_file))
@@ -54,9 +78,12 @@ def main() -> int:
         print(format_env_vars(values))
         return 0
 
+    if args.secrets:
+        print(format_secrets(values))
+        return 0
+
     return 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

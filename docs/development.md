@@ -50,6 +50,10 @@ export GCP_ACCOUNT=you@example.com
 4. `GCP_PROJECT_ID` があれば、gcloudのprojectを設定する。
 5. `GCP_ACCOUNT` があれば、gcloudのaccountを設定する。
 
+`.env-deploy` は本番デプロイ専用として扱う。
+本番の `GOOGLE_OAUTH_CLIENT_SECRET` は Secret Manager に置き、`.env-deploy` には実値を書かない。
+詳しくは [シークレット運用](secrets.md) を参照する。
+
 ## gcloud認証
 
 このプロジェクト専用のgcloud設定を有効化した状態で認証する。

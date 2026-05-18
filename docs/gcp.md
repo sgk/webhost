@@ -95,6 +95,7 @@ gcloud services enable \
   datastore.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
+  secretmanager.googleapis.com \
   storage.googleapis.com \
   logging.googleapis.com \
   monitoring.googleapis.com \
@@ -221,11 +222,20 @@ https://your-production-host.example.com
 
 本番ホストはCloud Runのカスタムドメイン、または運用で使う管理画面URLに合わせる。後から本番ホストを変えた場合は、OAuthクライアントのリダイレクトURIとJavaScript生成元も更新する。
 
-作成した値を `.env` と `.env-deploy` に設定する。
+作成したクライアントIDを `.env` と `.env-deploy` に設定する。
+ローカルで Google OAuth を試す場合は、クライアントシークレットを `.env` に設定する。
 
 ```bash
 export GOOGLE_OAUTH_CLIENT_ID=...
 export GOOGLE_OAUTH_CLIENT_SECRET=...
+```
+
+本番用クライアントシークレットは `.env-deploy` に実値を書かず、Secret Manager に保存する。
+Secret Manager の作成と更新の手順は [シークレット運用](secrets.md) を参照する。
+`.env-deploy` にはプレースホルダだけを設定する。
+
+```bash
+export GOOGLE_OAUTH_CLIENT_SECRET=secret-manager
 ```
 
 本番では `BASE_URL` も設定する。
@@ -436,6 +446,7 @@ export REGION="${REGION}"
 export SERVICE_ACCOUNT="${SERVICE_ACCOUNT_EMAIL}"
 export SITE_HISTORY_BUCKET="${HISTORY_BUCKET}"
 export SITE_SIGNED_URL_SERVICE_ACCOUNT="${SERVICE_ACCOUNT_EMAIL}"
+export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
 ```
 
 ローカル開発では:
@@ -450,9 +461,11 @@ export FIRESTORE_PREFIX=dev
 ```bash
 export BASE_URL=https://your-production-host.example.com
 export FIRESTORE_PREFIX=prod
+export GOOGLE_OAUTH_CLIENT_SECRET=secret-manager
 ```
 
 `FIRESTORE_PREFIX` は環境ごとにFirestoreデータを分けたい場合に設定する。分離しない運用では空にする。
+本番用の `GOOGLE_OAUTH_CLIENT_SECRET` は Secret Manager 参照を生成するためのプレースホルダで、実値は `.env-deploy` に書かない。
 
 ## 14. デプロイする
 
@@ -461,7 +474,7 @@ source ./activate.sh
 make deploy
 ```
 
-`make deploy` はCloud Runへ `--max-instances 1` を指定する。stagingはCloud Runインスタンス内の一時ディレクトリへ展開するため、最大インスタンス数は必ず1にする。
+`make deploy` はCloud Runへ `--max-instances 1` を指定し、`GOOGLE_OAUTH_CLIENT_SECRET` は `--set-secrets` で Secret Manager 参照として渡す。stagingはCloud Runインスタンス内の一時ディレクトリへ展開するため、最大インスタンス数は必ず1にする。
 
 Cloud Runにカスタムドメインを割り当てる場合は、管理画面用のホスト名をCloud Runサービスにマッピングし、DNSにはCloud Runが指示するレコードを設定する。一般的なCNAME先は次の形になる。
 

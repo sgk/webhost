@@ -15,6 +15,11 @@ deploy:
 	REGION=$$(python tools/deploy_env.py --env-file "$$ENV_FILE" --get REGION); \
 	SERVICE_ACCOUNT=$$(python tools/deploy_env.py --env-file "$$ENV_FILE" --get SERVICE_ACCOUNT); \
 	ENV_VARS=$$(python tools/deploy_env.py --env-file "$$ENV_FILE" --env-vars); \
+	SECRETS=$$(python tools/deploy_env.py --env-file "$$ENV_FILE" --secrets); \
+	SECRET_ARGS=; \
+	if [ -n "$$SECRETS" ]; then \
+		SECRET_ARGS="--set-secrets $$SECRETS"; \
+	fi; \
 	if [ -z "$$PROJECT_ID" ] || [ -z "$$SERVICE_NAME" ] || [ -z "$$REGION" ] || [ -z "$$SERVICE_ACCOUNT" ]; then \
 		echo "GCP_PROJECT_ID / SERVICE_NAME / REGION / SERVICE_ACCOUNT を $$ENV_FILE に設定してください。"; \
 		exit 1; \
@@ -27,7 +32,8 @@ deploy:
 		--allow-unauthenticated \
 		--max-instances 1 \
 		--set-build-env-vars GOOGLE_PYTHON_VERSION=3.13 \
-		--set-env-vars "$$ENV_VARS"
+		--set-env-vars "$$ENV_VARS" \
+		$$SECRET_ARGS
 
 run:
 	@set -e; \

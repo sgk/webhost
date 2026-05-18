@@ -95,3 +95,6 @@ stagingはCloud Runインスタンス内の一時ディレクトリへ展開す�
 cp dot-env-example .env-deploy
 make deploy
 ```
+
+本番の `GOOGLE_OAUTH_CLIENT_SECRET` は `.env-deploy` に実値を書かず、Secret Manager に保存する。
+手順は [docs/secrets.md](docs/secrets.md) を参照する。

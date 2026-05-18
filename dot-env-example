@@ -15,7 +15,8 @@ export BASE_URL=http://localhost:7000
 
 # Google OAuth (admin)
 export GOOGLE_OAUTH_CLIENT_ID=your-client-id
-export GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
+# .env-deploy では実値を書かず、Secret Manager に本番値を保存する。
+export GOOGLE_OAUTH_CLIENT_SECRET=secret-manager
 export ADMIN_SESSION_TTL_HOURS=12
 
 # Firestore prefix (optional)
