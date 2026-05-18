@@ -1,6 +1,6 @@
 [
   {
-    "origin": ["http://localhost:7000"],
+    "origin": ["http://localhost:7000", "https://webhost.ppona.com"],
     "method": ["PUT", "OPTIONS"],
     "responseHeader": ["Content-Type"],
     "maxAgeSeconds": 3600
