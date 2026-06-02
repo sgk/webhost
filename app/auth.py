@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 import requests
 
 from app.config import load_settings
-from app.firestore import get_client, get_collection
+from app.firestore import get_client, get_collection, list_admin_sites
 from app.i18n import language_url, make_translator, request_language
 
 settings = load_settings()
@@ -248,6 +248,13 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
         return _render_login(request, make_translator(request_language(request))("login.error.email"), next_path)
 
     now = datetime.now(timezone.utc)
+    db = get_client()
+    if not list_admin_sites(db, email):
+        response = _render_login(request, make_translator(request_language(request))("login.error.no_sites"), next_path)
+        response.delete_cookie(ADMIN_OAUTH_STATE_COOKIE)
+        response.delete_cookie(ADMIN_OAUTH_NEXT_COOKIE)
+        return response
+
     expires_at = now + timedelta(hours=settings.admin_session_ttl_hours)
     token = secrets.token_urlsafe(32)
     session = {
@@ -256,7 +263,6 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
         "created_at": now,
         "expires_at": expires_at,
     }
-    db = get_client()
     get_collection(db, "admin_sessions").document(token).set(session)
     _cache_session(token, session, now)
 
