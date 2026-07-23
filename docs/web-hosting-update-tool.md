@@ -9,7 +9,7 @@ GCSで公開する静的ウェブサイトを、管理者がZIPファイルで�
 ## 前提
 
 - Cloud Run上で動作する管理者専用Webサーバーとする。
-- 管理者はGoogleアカウントで認証する。
+- 管理者はGoogleアカウント、または管理者が事前登録したメールアドレスとパスワードで認証する。
 - 全体管理者用の管理画面は作らない。
 - サイト定義とサイトごとの管理者はFirestoreに置く。
 - 1人の管理者が複数サイトを管理できる。
@@ -37,6 +37,7 @@ staging確認サイトはCloud Runインスタンス内の一時ディレクト�
 /logout
 /auth/google
 /auth/google/callback
+/auth/password
 
 /sites
 /sites/{site_id}
@@ -90,6 +91,18 @@ admin_sessions/{token}
 ```
 
 管理者セッションはFirestoreに保存する。Cookieにはランダムなセッショントークンだけを入れる。
+
+パスワード認証用資格情報:
+
+```text
+admin_passwords/{email_sha256}
+  email: string
+  password_hash: string
+  enabled: bool
+  updated_at: timestamp
+```
+
+`email_sha256` は、小文字化して前後の空白を除いたメールアドレスのSHA-256とする。パスワードはランダムなソルトを使ったscryptハッシュとして保存し、平文は保存しない。CLIは、パスワード未指定時にランダムパスワードを発行し、指定時は指定値を使う。ユーザー自身による登録、再設定、変更機能は設けず、管理者がCLIで登録・更新する。
 
 ## GCS
 
@@ -266,6 +279,7 @@ MAX_INSTANCES=1
 - 設定読み込み。
 - Firestore接続。
 - Google OAuthログイン。
+- メールアドレスとパスワードによるログイン。
 - Firestore保存の管理者セッション。
 - サイト一覧。
 - サイト別権限判定。

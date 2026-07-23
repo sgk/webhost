@@ -50,6 +50,21 @@ sites/{site_id}/admins/{email}
 
 `site_id` は英小文字、数字、ハイフンで人間が決める。
 
+パスワードログインを有効にする管理者は、先にサイト別管理者へ登録したうえで、対話式CLIから資格情報を登録する。
+
+```bash
+source ./activate.sh
+python -m tools.set_admin_password admin@example.com
+```
+
+パスワードを省略するとランダムパスワードを発行し、Firestoreへの登録成功後に表示する。パスワードを指定する場合は `--password` を使う。
+
+```bash
+python -m tools.set_admin_password admin@example.com --password '12文字以上のパスワード'
+```
+
+`--password` の値はシェル履歴やプロセス一覧に残る可能性があるため、通常は自動発行を使う。資格情報は `admin_passwords/{メールアドレスのSHA-256}` に保存する。パスワードはランダムなソルトを使ったscryptハッシュとして保存し、平文は保存しない。同じコマンドを再実行するとパスワードを更新する。
+
 `html_charset` は任意項目。設定した場合、stagingと公開時のHTMLレスポンスに `text/html; charset={html_charset}` を付ける。既存コンテンツの文字コードを変換する項目ではない。
 
 `public_url` と `public_prefix` は末尾 `/` ありで登録する。

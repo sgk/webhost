@@ -2,9 +2,38 @@
 {% block content %}
   <section class="panel narrow">
     <h1>{{ t("login.title") }}</h1>
-    {% if error %}
-      <p class="message error">{{ error }}</p>
+    <p class="message error login-message{% if not error %} is-empty{% endif %}" aria-live="polite">
+      {{ error or t("login.error.placeholder") }}
+    </p>
+    <form class="login-form" method="post" action="/auth/password">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="next" value="{{ next_path }}" />
+      <label class="form-field">
+        <span>{{ t("login.email") }}</span>
+        <input
+          type="email"
+          name="email"
+          maxlength="320"
+          autocomplete="username"
+          required
+          autofocus
+        />
+      </label>
+      <label class="form-field">
+        <span>{{ t("login.password") }}</span>
+        <input
+          type="password"
+          name="password"
+          maxlength="1024"
+          autocomplete="current-password"
+          required
+        />
+      </label>
+      <button class="button primary login-submit" type="submit">{{ t("login.password_submit") }}</button>
+    </form>
+    {% if google_login_enabled %}
+      <div class="login-divider"><span>{{ t("login.or") }}</span></div>
+      <a class="button secondary login-google" href="{{ auth_start_url }}">{{ t("login.google") }}</a>
     {% endif %}
-    <a class="button primary" href="{{ auth_start_url }}">{{ t("login.google") }}</a>
   </section>
 {% endblock %}

@@ -157,6 +157,68 @@ a {
   margin: 0 0 14px;
 }
 
+.login-message {
+  height: 72px;
+  margin: 0 0 14px;
+  overflow-wrap: anywhere;
+}
+
+.login-message.is-empty {
+  visibility: hidden;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form-field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.form-field input:focus {
+  border-color: var(--primary);
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.login-submit,
+.login-google {
+  width: 100%;
+}
+
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.login-divider::before,
+.login-divider::after {
+  width: 100%;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+
 .site-list {
   overflow: hidden;
 }

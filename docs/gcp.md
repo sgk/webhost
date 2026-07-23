@@ -362,13 +362,40 @@ sites/{site_id}/admins/{admin_email}
   email: string
 ```
 
-管理者を追加する場合は、対象サイトの `admins` サブコレクションにGoogleアカウントのメールアドレスを小文字で登録する。ドキュメントIDもメールアドレスにしておくと確認しやすい。
+管理者を追加する場合は、対象サイトの `admins` サブコレクションにメールアドレスを小文字で登録する。ドキュメントIDもメールアドレスにしておくと確認しやすい。この登録はGoogleログインとパスワードログインで共通して使う。
 
 ```json
 {
   "email": "admin@example.com"
 }
 ```
+
+パスワードログインも使う管理者は、サイト管理者の登録後に、プロジェクトの仮想環境とGCP設定を有効化して対話式CLIを実行する。
+
+```bash
+source ./activate.sh
+python -m tools.set_admin_password admin@example.com
+```
+
+CLIは、入力したメールアドレスが少なくとも1つの有効なサイトの管理者であることを確認する。パスワードを省略するとランダムパスワードを発行し、Firestoreへの登録成功後に一度だけ表示する。パスワードは12文字以上とし、Firestoreの次のドキュメントへscryptハッシュだけを保存する。
+
+```text
+admin_passwords/{email_sha256}
+  email: string
+  password_hash: string
+  enabled: true
+  updated_at: timestamp
+```
+
+同じメールアドレスでCLIを再実行すると、既存のパスワード資格情報を更新する。ユーザー自身による登録、再設定、パスワード変更画面は設けない。
+
+パスワードを明示する場合は `--password` を使う。
+
+```bash
+python -m tools.set_admin_password admin@example.com --password '12文字以上のパスワード'
+```
+
+`--password` の値はシェル履歴やプロセス一覧に残る可能性があるため、通常は自動発行を使う。
 
 `site_id` は英小文字、数字、ハイフンで人間が決める。
 

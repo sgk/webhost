@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
 import threading
+import time
 from urllib.parse import quote, unquote, urlencode
 
 from fastapi import APIRouter, Request
@@ -13,6 +16,7 @@ import requests
 from app.config import load_settings
 from app.firestore import get_client, get_collection, list_admin_sites
 from app.i18n import language_url, make_translator, request_language
+from app.password_auth import DUMMY_PASSWORD_HASH, password_document_id, verify_password
 
 settings = load_settings()
 router = APIRouter()
@@ -21,14 +25,22 @@ templates = Jinja2Templates(directory="app/templates")
 ADMIN_SESSION_COOKIE = "admin_session"
 ADMIN_OAUTH_STATE_COOKIE = "admin_oauth_state"
 ADMIN_OAUTH_NEXT_COOKIE = "admin_oauth_next"
+ADMIN_PASSWORD_CSRF_COOKIE = "admin_password_csrf"
 ADMIN_LOGIN_PATH = "/login"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 SESSION_CACHE_SECONDS = 30
+PASSWORD_CSRF_TTL_SECONDS = 600
+PASSWORD_LOGIN_WINDOW_SECONDS = 300
+PASSWORD_LOGIN_EMAIL_ATTEMPTS = 10
+PASSWORD_LOGIN_CLIENT_ATTEMPTS = 30
+PASSWORD_LOGIN_TRACKED_KEYS = 4096
 
 _session_cache: dict[str, tuple[datetime, dict]] = {}
 _session_cache_lock = threading.Lock()
+_password_login_attempts: dict[str, deque[float]] = {}
+_password_login_attempts_lock = threading.Lock()
 
 
 def _is_https(request: Request) -> bool:
@@ -70,18 +82,117 @@ def _render_login(request: Request, error: str | None = None, next_path: str | N
     normalized = _normalize_next_path(next_path)
     lang = request_language(request)
     t = make_translator(lang)
-    return templates.TemplateResponse(
+    csrf_token = secrets.token_urlsafe(32)
+    response = templates.TemplateResponse(
+        request,
         "login.html",
         {
-            "request": request,
             "title": t("login.title"),
             "lang": lang,
             "t": t,
             "language_url": lambda next_lang: language_url(request, next_lang),
             "error": error,
+            "csrf_token": csrf_token,
+            "next_path": normalized,
+            "google_login_enabled": bool(
+                settings.google_oauth_client_id and settings.google_oauth_client_secret
+            ),
             "auth_start_url": f"/auth/google?next={quote(normalized)}",
         },
     )
+    response.set_cookie(
+        ADMIN_PASSWORD_CSRF_COOKIE,
+        csrf_token,
+        max_age=PASSWORD_CSRF_TTL_SECONDS,
+        httponly=True,
+        samesite="strict",
+        secure=_is_https(request),
+    )
+    return response
+
+
+def _create_admin_session_response(
+    request: Request,
+    db,
+    *,
+    email: str,
+    picture: str | None,
+    next_path: str,
+    auth_method: str,
+) -> RedirectResponse:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=settings.admin_session_ttl_hours)
+    token = secrets.token_urlsafe(32)
+    session = {
+        "email": email,
+        "picture": picture,
+        "auth_method": auth_method,
+        "created_at": now,
+        "expires_at": expires_at,
+    }
+    get_collection(db, "admin_sessions").document(token).set(session)
+    _cache_session(token, session, now)
+
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        token,
+        max_age=settings.admin_session_ttl_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=_is_https(request),
+    )
+    return response
+
+
+def _login_attempt_key(kind: str, value: str) -> str:
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"{kind}:{digest}"
+
+
+def _prune_login_attempts(key: str, now: float) -> deque[float]:
+    attempts = _password_login_attempts.get(key, deque())
+    cutoff = now - PASSWORD_LOGIN_WINDOW_SECONDS
+    while attempts and attempts[0] <= cutoff:
+        attempts.popleft()
+    if not attempts:
+        _password_login_attempts.pop(key, None)
+    return attempts
+
+
+def _password_login_is_blocked(email: str, client: str) -> bool:
+    now = time.monotonic()
+    email_key = _login_attempt_key("email", email)
+    client_key = _login_attempt_key("client", client)
+    with _password_login_attempts_lock:
+        email_attempts = _prune_login_attempts(email_key, now)
+        client_attempts = _prune_login_attempts(client_key, now)
+        return (
+            len(email_attempts) >= PASSWORD_LOGIN_EMAIL_ATTEMPTS
+            or len(client_attempts) >= PASSWORD_LOGIN_CLIENT_ATTEMPTS
+        )
+
+
+def _record_password_login_failure(email: str, client: str) -> None:
+    now = time.monotonic()
+    email_key = _login_attempt_key("email", email)
+    client_key = _login_attempt_key("client", client)
+    with _password_login_attempts_lock:
+        email_attempts = _prune_login_attempts(email_key, now)
+        email_attempts.append(now)
+        _password_login_attempts[email_key] = email_attempts
+        client_attempts = _prune_login_attempts(client_key, now)
+        client_attempts.append(now)
+        _password_login_attempts[client_key] = client_attempts
+        while len(_password_login_attempts) > PASSWORD_LOGIN_TRACKED_KEYS:
+            oldest_key = next(iter(_password_login_attempts))
+            _password_login_attempts.pop(oldest_key, None)
+
+
+def _clear_password_login_failures(email: str) -> None:
+    email_key = _login_attempt_key("email", email)
+    with _password_login_attempts_lock:
+        _password_login_attempts.pop(email_key, None)
 
 
 def _get_cached_session(token: str, now: datetime) -> dict | None:
@@ -153,9 +264,55 @@ async def login(request: Request, next: str | None = None):
     session = get_admin_session(request)
     if session:
         return RedirectResponse(url=_normalize_next_path(next), status_code=303)
-    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
-        return _render_login(request, make_translator(request_language(request))("login.error.config"), next)
     return _render_login(request, None, next)
+
+
+@router.post("/auth/password", response_class=HTMLResponse)
+async def auth_password(request: Request):
+    form = await request.form()
+    email = str(form.get("email") or "").strip().lower()
+    password = str(form.get("password") or "")
+    next_path = _normalize_next_path(str(form.get("next") or ""))
+    csrf_token = str(form.get("csrf_token") or "")
+    csrf_cookie = request.cookies.get(ADMIN_PASSWORD_CSRF_COOKIE, "")
+    t = make_translator(request_language(request))
+
+    if not csrf_token or not csrf_cookie or not secrets.compare_digest(csrf_token, csrf_cookie):
+        return _render_login(request, t("login.error.expired"), next_path)
+
+    client = request.client.host if request.client else "unknown"
+    if _password_login_is_blocked(email, client):
+        return _render_login(request, t("login.error.rate_limit"), next_path)
+
+    db = get_client()
+    credential = None
+    if email and len(email) <= 320:
+        credential_doc = get_collection(db, "admin_passwords").document(password_document_id(email)).get()
+        if credential_doc.exists:
+            candidate = credential_doc.to_dict() or {}
+            if (
+                str(candidate.get("email") or "").strip().lower() == email
+                and candidate.get("enabled") is True
+            ):
+                credential = candidate
+
+    encoded_hash = str((credential or {}).get("password_hash") or DUMMY_PASSWORD_HASH)
+    password_matches = verify_password(password, encoded_hash)
+    if not credential or not password_matches or not list_admin_sites(db, email):
+        _record_password_login_failure(email, client)
+        return _render_login(request, t("login.error.password"), next_path)
+
+    _clear_password_login_failures(email)
+    response = _create_admin_session_response(
+        request,
+        db,
+        email=email,
+        picture=None,
+        next_path=next_path,
+        auth_method="password",
+    )
+    response.delete_cookie(ADMIN_PASSWORD_CSRF_COOKIE)
+    return response
 
 
 @router.get("/logout")
@@ -247,7 +404,6 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
     if not email or info.get("email_verified") not in ("true", True):
         return _render_login(request, make_translator(request_language(request))("login.error.email"), next_path)
 
-    now = datetime.now(timezone.utc)
     db = get_client()
     if not list_admin_sites(db, email):
         response = _render_login(request, make_translator(request_language(request))("login.error.no_sites"), next_path)
@@ -255,25 +411,13 @@ async def auth_google_callback(request: Request, code: str = "", state: str = ""
         response.delete_cookie(ADMIN_OAUTH_NEXT_COOKIE)
         return response
 
-    expires_at = now + timedelta(hours=settings.admin_session_ttl_hours)
-    token = secrets.token_urlsafe(32)
-    session = {
-        "email": email,
-        "picture": info.get("picture"),
-        "created_at": now,
-        "expires_at": expires_at,
-    }
-    get_collection(db, "admin_sessions").document(token).set(session)
-    _cache_session(token, session, now)
-
-    response = RedirectResponse(url=next_path, status_code=303)
-    response.set_cookie(
-        ADMIN_SESSION_COOKIE,
-        token,
-        max_age=settings.admin_session_ttl_hours * 3600,
-        httponly=True,
-        samesite="lax",
-        secure=_is_https(request),
+    response = _create_admin_session_response(
+        request,
+        db,
+        email=email,
+        picture=info.get("picture"),
+        next_path=next_path,
+        auth_method="google",
     )
     response.delete_cookie(ADMIN_OAUTH_STATE_COOKIE)
     response.delete_cookie(ADMIN_OAUTH_NEXT_COOKIE)
