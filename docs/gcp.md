@@ -377,6 +377,19 @@ source ./activate.sh
 python -m tools.set_admin_password admin@example.com
 ```
 
+CLIの接続先は実行時のGoogle Cloudプロジェクトと`FIRESTORE_PREFIX`で決まる。上記は`.env`で設定したローカル開発環境向けである。本番へ登録するときは、`.env-deploy`から対象を明示して実行する。
+
+```bash
+source ./activate.sh
+PRODUCTION_PROJECT_ID="$(python tools/deploy_env.py --env-file .env-deploy --get GCP_PROJECT_ID)"
+PRODUCTION_FIRESTORE_PREFIX="$(python tools/deploy_env.py --env-file .env-deploy --get FIRESTORE_PREFIX)"
+GOOGLE_CLOUD_PROJECT="$PRODUCTION_PROJECT_ID" \
+FIRESTORE_PREFIX="$PRODUCTION_FIRESTORE_PREFIX" \
+python -m tools.set_admin_password admin@example.com
+```
+
+実行前に、対象メールアドレスをサイトの`admins`サブコレクションへ登録しておく。CLIは資格情報の登録または更新内容を表示し、確認に`y`または`yes`を入力した場合だけFirestoreへ書き込む。
+
 CLIは、入力したメールアドレスが少なくとも1つの有効なサイトの管理者であることを確認する。パスワードを省略するとランダムパスワードを発行し、Firestoreへの登録成功後に一度だけ表示する。パスワードは12文字以上とし、Firestoreの次のドキュメントへscryptハッシュだけを保存する。
 
 ```text
